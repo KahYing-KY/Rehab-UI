@@ -3,6 +3,7 @@ import '../main.dart';
 import 'warmup_screen.dart';
 import 'sudoku_screen.dart';
 import 'progress_screen.dart';
+import 'interim_demo_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -65,6 +66,15 @@ class _HomeScreenState extends State<HomeScreen> {
                               color: kTeal)),
                     ],
                   ),
+                ),
+                const SizedBox(height: 24),
+                  ActionCard(
+                  icon: Icons.grid_view_rounded,
+                  color: kTeal,
+                  title: 'Interim Demo (Row-by-Row)',
+                  description: 'Simulate the 1x3 physical printed board interaction latin square of a 3 by 3 board filled row by row.',
+                  buttonLabel: 'Start Demo',
+                  onPressed: () => _go(const InterimDemoScreen()),
                 ),
                 const SizedBox(height: 24),
                 const Text('What would you like to do today?',
