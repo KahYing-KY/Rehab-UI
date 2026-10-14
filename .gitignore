@@ -1,36 +1,31 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.buildlog/
-.history
-.svn/
-.swiftpm/
+# Flutter/Dart/Pub specifics
+/build/
+.dart_tool/
+.packages
 
-# IntelliJ-based IDEs
+# IDEs and Editors
+.vscode/
 .idea/
 *.iml
 *.iws
 *.ipr
+.classpath
+.project
+.settings/
 
-# Visual Studio Code
-.vscode/
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
 
-# Flutter / Dart specific
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.pub-cache/
-.pub/
-build/
-!/build/web/
-
-# Web specific
-/doc/api/
-
-# Symbol files
-*.m
+# Ignore native platform folders (web-only project)
+/android/
+/ios/
+/windows/
+/macos/
+/linux/
