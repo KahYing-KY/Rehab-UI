@@ -1,8 +1,21 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/home_screen.dart';
 
-void main() => runApp(const RehabSudokuApp());
+void main() async {
+  // 1. Ensure Flutter framework bindings are initialized
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // 2. Initialize Supabase (using placeholder values for now so it doesn't block)
+  await Supabase.initialize(
+    url: 'https://placeholder.supabase.co',
+    publishableKey: 'placeholder-key',
+  );
+
+  // 3. Run the app
+  runApp(const RehabSudokuApp());
+}
 
 // ===========================================================================
 // 1. COLORS

@@ -13,6 +13,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
   late List<int?> _board;
   late List<int> _solutionGrid;
   int _activeRowIndex = 0; // 0 = Row 1, 1 = Row 2, 2 = Row 3
+  int _mistakeCount = 0; // Tracks incorrect/conflicting tile placements
   
   final Random _random = Random();
   final Stopwatch sw = Stopwatch()..start();
@@ -29,20 +30,20 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     setState(() {
       _activeRowIndex = 0;
       _isDemoCompleted = false;
+      _mistakeCount = 0; // Reset mistakes on new game
       sw.reset();
       sw.start();
 
-      // 1. Generate a valid 3x3 Latin square solution
+      // 1. Generate a valid 3x3 Latin square solution[cite: 4]
       final List<int> firstRow = List.generate(3, (i) => i + 1)..shuffle(_random);
       final List<int> secondRow = List.generate(3, (i) => firstRow[(i + 1) % 3]);
       final List<int> thirdRow = List.generate(3, (i) => firstRow[(i + 2) % 3]);
       _solutionGrid = [...firstRow, ...secondRow, ...thirdRow];
 
-      // 2. Place exactly ONE '1', ONE '2', and ONE '3' as initial clues across the board
+      // 2. Place exactly ONE '1', ONE '2', and ONE '3' as initial clues across the board[cite: 4]
       _board = List.filled(9, null);
       List<int> availableIndices = List.generate(9, (i) => i)..shuffle(_random);
       
-      // Find and place one of each (1, 2, 3) from the solution
       Set<int> placedNumbers = {};
       for (int idx in availableIndices) {
         int num = _solutionGrid[idx];
@@ -55,7 +56,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     });
   }
 
-  // Inventory pool for active row
+  // Inventory pool for active row[cite: 4]
   List<int> _getInventoryPool() {
     int startIdx = _activeRowIndex * 3;
     List<int> activeRowSlots = [
@@ -71,23 +72,44 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     return pool;
   }
 
-  // Check row conflicts for active row
+  // Check BOTH row and column conflicts to strictly enforce Latin Square rules[cite: 4]
   Set<int> _findConflicts() {
     final Set<int> conflicts = {};
-    int startIdx = _activeRowIndex * 3;
-    Map<int, List<int>> counts = {};
-    
-    for (int i = 0; i < 3; i++) {
-      int? val = _board[startIdx + i];
-      if (val != null) {
-        counts.putIfAbsent(val, () => []).add(startIdx + i);
+
+    // 1. Check all rows for duplicates[cite: 4]
+    for (int r = 0; r < 3; r++) {
+      Map<int, List<int>> rowCounts = {};
+      for (int c = 0; c < 3; c++) {
+        int idx = r * 3 + c;
+        int? val = _board[idx];
+        if (val != null) {
+          rowCounts.putIfAbsent(val, () => []).add(idx);
+        }
       }
+      rowCounts.forEach((val, indices) {
+        if (indices.length > 1) {
+          conflicts.addAll(indices);
+        }
+      });
     }
-    counts.forEach((val, indices) {
-      if (indices.length > 1) {
-        conflicts.addAll(indices);
+
+    // 2. Check all columns for duplicates[cite: 4]
+    for (int c = 0; c < 3; c++) {
+      Map<int, List<int>> colCounts = {};
+      for (int r = 0; r < 3; r++) {
+        int idx = r * 3 + c;
+        int? val = _board[idx];
+        if (val != null) {
+          colCounts.putIfAbsent(val, () => []).add(idx);
+        }
       }
-    });
+      colCounts.forEach((val, indices) {
+        if (indices.length > 1) {
+          conflicts.addAll(indices);
+        }
+      });
+    }
+
     return conflicts;
   }
 
@@ -98,6 +120,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       if (_board[startIdx + i] == null) rowComplete = false;
     }
 
+    // Only allow advancing if the active row is complete AND there are zero row/column conflicts[cite: 4]
     if (rowComplete && conflicts.isEmpty && !_isDemoCompleted) {
       sw.stop();
       final secs = sw.elapsedMilliseconds / 1000;
@@ -116,14 +139,20 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
         setState(() {
           _isDemoCompleted = true;
         });
-        history.add(SessionRecord('Interim Demo (Row-by-Row)', DateTime.now(), secs, 'Completed all 3 rows with 1, 2, 3 initial clues'));
+        // Log history with total time and tracked mistake count
+        history.add(SessionRecord(
+          'Interim Demo (Row-by-Row)', 
+          DateTime.now(), 
+          secs, 
+          'Completed all 3 rows | Mistakes: $_mistakeCount'
+        ));
         WidgetsBinding.instance.addPostFrameCallback((_) {
           showDialog<void>(
             context: context,
             barrierDismissible: false,
             builder: (ctx) => AlertDialog(
               title: const Text('Demo Completed!'),
-              content: Text('You successfully completed the 3x3 board row-by-row in ${fmtSeconds(secs)}.'),
+              content: Text('You successfully completed the 3x3 board row-by-row in ${fmtSeconds(secs)} with $_mistakeCount mistake(s).'),
               actions: [
                 TextButton(
                   onPressed: () {
@@ -182,7 +211,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
                       Text(
                         _isDemoCompleted
                             ? 'Great job demonstrating the physical board progression!'
-                            : 'Board starts with exactly one 1, one 2, and one 3 as initial clues. Complete the active row.',
+                            : 'Board starts with 1, 2, 3 initial clues. Complete rows following Latin Square rules (no duplicate numbers in any row or column).',
                         style: const TextStyle(fontSize: 15, color: kInk),
                       ),
                     ],
@@ -190,7 +219,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
                 ),
                 const SizedBox(height: 24),
 
-                // 3x3 GRID WITH 1, 2, 3 INITIAL CLUES
+                // 3x3 GRID[cite: 4]
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -234,20 +263,42 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
                               } else if (data['from'] == 'inventory') {
                                 _board[index] = data['value'];
                               }
+
+                              // Track mistake if the new placement causes a conflict
+                              if (_findConflicts().isNotEmpty) {
+                                _mistakeCount++;
+                              }
                             });
                           }
                         },
                         builder: (context, candidateData, rejectedData) {
+                          Color bgColor;
+                          Color borderColor;
+                          if (isInitialClue) {
+                            bgColor = const Color(0xFFE1F2F3);
+                            borderColor = kTeal;
+                          } else if (isActiveRow) {
+                            if (hasConflict) {
+                              bgColor = Colors.red.shade50;
+                              borderColor = Colors.red; // Highlights row/column conflicts in red[cite: 4]
+                            } else if (val == null) {
+                              bgColor = Colors.white;
+                              borderColor = kTeal;
+                            } else {
+                              bgColor = const Color(0xFFE1F2F3);
+                              borderColor = kTeal;
+                            }
+                          } else {
+                            bgColor = const Color(0xFFF8FAFC);
+                            borderColor = Colors.grey.shade300;
+                          }
+
                           return Container(
                             decoration: BoxDecoration(
-                              color: isInitialClue
-                                  ? const Color(0xFFE1F2F3)
-                                  : (isActiveRow
-                                      ? (hasConflict ? const Color(0xFFFFEBEE) : (val == null ? Colors.white : const Color(0xFFE1F2F3)))
-                                      : const Color(0xFFF8FAFC)),
+                              color: bgColor,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: isActiveRow ? kTeal : Colors.grey.shade300,
+                                color: borderColor,
                                 width: isActiveRow ? 3 : 1.5,
                               ),
                             ),
@@ -263,14 +314,14 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
                                               child: Container(
                                                 width: 70,
                                                 height: 70,
-                                                decoration: BoxDecoration(color: kTeal, borderRadius: BorderRadius.circular(12)),
+                                                decoration: BoxDecoration(color: hasConflict ? Colors.red : kTeal, borderRadius: BorderRadius.circular(12)),
                                                 alignment: Alignment.center,
                                                 child: Text('$val', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
                                               ),
                                             ),
                                             childWhenDragging: Opacity(
                                               opacity: 0.3,
-                                              child: Text('$val', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+                                              child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
                                             ),
                                             child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
                                           )
@@ -291,7 +342,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
                 ),
                 const SizedBox(height: 12),
 
-                // Inventory Pool Box
+                // Inventory Pool Box[cite: 4]
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -352,7 +403,6 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
   }
 
   bool _isOriginalClue(int index) {
-    // Verifies if the cell contains an initial starting clue from generation
     return _board[index] == _solutionGrid[index];
   }
 

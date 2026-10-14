@@ -21,6 +21,7 @@ class _SudokuScreenState extends State<SudokuScreen> {
   PuzzleDifficulty _currentDifficulty = PuzzleDifficulty.medium;
   final Stopwatch sw = Stopwatch()..start();
   bool _isSolved = false;
+  int _mistakeCount = 0; // Tracks incorrect/conflicting tile placements during training
 
   // We designate one 3x3 sub-grid box as the active workspace (e.g., box index 4 = center box)
   final int _activeBoxIndex = 4; 
@@ -50,6 +51,7 @@ class _SudokuScreenState extends State<SudokuScreen> {
   void _generateSubGridPuzzle() {
     setState(() {
       _isSolved = false;
+      _mistakeCount = 0; // Reset mistakes on new puzzle
       sw.reset();
       sw.start();
 
@@ -166,8 +168,14 @@ class _SudokuScreenState extends State<SudokuScreen> {
       _isSolved = true;
       sw.stop();
       final secs = sw.elapsedMilliseconds / 1000;
-      history.add(SessionRecord('Sudoku (9x9 Sub-Grid)', DateTime.now(), secs,
-          'Completed active box challenge (${_currentDifficulty.name})'));
+      
+      // Log session with mistake accuracy tracking included
+      history.add(SessionRecord(
+        'Sudoku (9x9 Sub-Grid)', 
+        DateTime.now(), 
+        secs,
+        'Completed active box challenge (${_currentDifficulty.name}) | Mistakes: $_mistakeCount'
+      ));
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
         showDialog<void>(
@@ -175,7 +183,7 @@ class _SudokuScreenState extends State<SudokuScreen> {
           barrierDismissible: false,
           builder: (ctx) => AlertDialog(
             title: const Text('Box Completed!'),
-            content: Text('You successfully filled the target 3x3 box in ${fmtSeconds(secs)}.'),
+            content: Text('You successfully filled the target 3x3 box in ${fmtSeconds(secs)} with $_mistakeCount mistake(s).'),
             actions: [
               TextButton(
                 onPressed: () {
@@ -308,6 +316,11 @@ class _SudokuScreenState extends State<SudokuScreen> {
                               }
                             } else if (from == 'sidebar') {
                               _board[index] = draggedValue;
+                            }
+
+                            // Increment mistake counter if placement results in conflicts
+                            if (_findConflictingIndices().isNotEmpty) {
+                              _mistakeCount++;
                             }
                           });
                         }
