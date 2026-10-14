@@ -12,11 +12,18 @@ class SudokuScreen extends StatefulWidget {
 }
 
 class _SudokuScreenState extends State<SudokuScreen> {
+  // Full 9x9 board representation (81 cells)
   late List<int?> _board;
+  // Keeps track of which cells are original locked clues vs user-editable slots
+  late List<bool> _isInitialCell;
+  
   final Random _random = Random();
   PuzzleDifficulty _currentDifficulty = PuzzleDifficulty.medium;
   final Stopwatch sw = Stopwatch()..start();
   bool _isSolved = false;
+
+  // We designate one 3x3 sub-grid box as the active workspace (e.g., box index 4 = center box)
+  final int _activeBoxIndex = 4; 
 
   @override
   void initState() {
@@ -36,29 +43,49 @@ class _SudokuScreenState extends State<SudokuScreen> {
           break;
       }
     }
-    _generateRandomPuzzle();
+    _generateSubGridPuzzle();
   }
 
-  void _generateRandomPuzzle() {
+  // Generates a valid 9x9 solved layout, locks 8 boxes, and punches holes in the active box
+  void _generateSubGridPuzzle() {
     setState(() {
       _isSolved = false;
       sw.reset();
       sw.start();
 
-      final List<int> firstRow = List.generate(3, (i) => i + 1)..shuffle(_random);
-      final List<int> secondRow = List.generate(3, (i) => firstRow[(i + 1) % 3]);
-      final List<int> thirdRow = List.generate(3, (i) => firstRow[(i + 2) % 3]);
+      // 1. Generate a valid baseline 9x9 Sudoku board solution
+      final List<int> baseSolution = [
+        5, 3, 4, 6, 7, 8, 9, 1, 2,
+        6, 7, 2, 1, 9, 5, 3, 4, 8,
+        1, 9, 8, 3, 4, 2, 5, 6, 7,
+        8, 5, 9, 7, 6, 1, 4, 2, 3,
+        4, 2, 6, 8, 5, 3, 7, 9, 1,
+        7, 1, 3, 9, 2, 4, 8, 5, 6,
+        9, 6, 1, 5, 3, 7, 2, 8, 4,
+        2, 8, 7, 4, 1, 9, 6, 3, 5,
+        3, 4, 5, 2, 8, 6, 1, 7, 9,
+      ];
 
-      final List<int> completeGrid = List<int>.from(firstRow)
-        ..addAll(secondRow)
-        ..addAll(thirdRow);
+      _board = List<int?>.from(baseSolution);
+      _isInitialCell = List.generate(81, (index) => true);
 
-      _board = List<int?>.from(completeGrid);
-      
+      // 2. Determine which cell indices belong to the _activeBoxIndex
+      List<int> activeBoxIndices = [];
+      int startRow = (_activeBoxIndex ~/ 3) * 3;
+      int startCol = (_activeBoxIndex % 3) * 3;
+
+      for (int r = 0; r < 3; r++) {
+        for (int c = 0; c < 3; c++) {
+          int cellIndex = (startRow + r) * 9 + (startCol + c);
+          activeBoxIndices.add(cellIndex);
+        }
+      }
+
+      // 3. Determine number of holes based on difficulty
       int holesCount;
       switch (_currentDifficulty) {
         case PuzzleDifficulty.easy:
-          holesCount = 2;
+          holesCount = 3;
           break;
         case PuzzleDifficulty.medium:
           holesCount = 5;
@@ -68,50 +95,65 @@ class _SudokuScreenState extends State<SudokuScreen> {
           break;
       }
 
-      final List<int> indices = List.generate(9, (index) => index)..shuffle(_random);
-      for (int i = 0; i < holesCount; i++) {
-        _board[indices[i]] = null;
+      // Punch holes strictly within the active box
+      activeBoxIndices.shuffle(_random);
+      for (int i = 0; i < holesCount && i < activeBoxIndices.length; i++) {
+        int holeIdx = activeBoxIndices[i];
+        _board[holeIdx] = null;
+        _isInitialCell[holeIdx] = false;
       }
     });
   }
 
+  // Get inventory pool of missing numbers specifically for the active box
   List<int> _getSidebarPool() {
-    final List<int> requiredPool = List.generate(9, (index) => (index ~/ 3) + 1);
-    for (var num in _board) {
-      if (num != null) {
-        requiredPool.remove(num);
+    int startRow = (_activeBoxIndex ~/ 3) * 3;
+    int startCol = (_activeBoxIndex % 3) * 3;
+
+    Set<int> presentInBox = {};
+    for (int r = 0; r < 3; r++) {
+      for (int c = 0; c < 3; c++) {
+        int cellIndex = (startRow + r) * 9 + (startCol + c);
+        if (_board[cellIndex] != null) {
+          presentInBox.add(_board[cellIndex]!);
+        }
       }
     }
-    return requiredPool;
+
+    // Find all numbers 1-9 that are NOT currently placed in this 3x3 box
+    List<int> inventory = [];
+    for (int n = 1; n <= 9; n++) {
+      if (!presentInBox.contains(n)) {
+        inventory.add(n);
+      }
+    }
+    return inventory;
   }
 
+  // Cross-check row, column, and 3x3 box conflicts across the 9x9 grid
   Set<int> _findConflictingIndices() {
     final Set<int> conflictingIndices = {};
 
-    for (int row = 0; row < 3; row++) {
-      final Map<int, List<int>> rowValues = {};
-      for (int col = 0; col < 3; col++) {
-        int index = row * 3 + col;
-        int? val = _board[index];
-        if (val != null) {
-          rowValues.putIfAbsent(val, () => []).add(index);
+    for (int i = 0; i < 9; i++) {
+      Map<int, List<int>> rowVals = {};
+      Map<int, List<int>> colVals = {};
+
+      for (int j = 0; j < 9; j++) {
+        int rowIdx = i * 9 + j;
+        int colIdx = j * 9 + i;
+
+        if (_board[rowIdx] != null) {
+          rowVals.putIfAbsent(_board[rowIdx]!, () => []).add(rowIdx);
+        }
+        if (_board[colIdx] != null) {
+          colVals.putIfAbsent(_board[colIdx]!, () => []).add(colIdx);
         }
       }
-      rowValues.forEach((val, indices) {
+
+      rowVals.forEach((val, indices) {
         if (indices.length > 1) conflictingIndices.addAll(indices);
       });
-    }
-
-    for (int col = 0; col < 3; col++) {
-      final Map<int, List<int>> colValues = {};
-      for (int row = 0; row < 3; row++) {
-        int index = row * 3 + col;
-        int? val = _board[index];
-        if (val != null) {
-          colValues.putIfAbsent(val, () => []).add(index);
-        }
-      }
-      colValues.forEach((val, indices) {
+      colVals.forEach((val, indices) {
         if (indices.length > 1) conflictingIndices.addAll(indices);
       });
     }
@@ -119,28 +161,28 @@ class _SudokuScreenState extends State<SudokuScreen> {
     return conflictingIndices;
   }
 
-  void _checkSolved(Set<int> conflictingIndices, List<int> sidebarPool) {
-    if (!_isSolved && sidebarPool.isEmpty && !_board.contains(null) && conflictingIndices.isEmpty) {
+  void _checkSolved(Set<int> conflictingIndices) {
+    if (!_isSolved && !_board.contains(null) && conflictingIndices.isEmpty) {
       _isSolved = true;
       sw.stop();
       final secs = sw.elapsedMilliseconds / 1000;
-      history.add(SessionRecord('Sudoku', DateTime.now(), secs,
-          'Puzzle solved (${currentDifficulty?.label ?? _currentDifficulty.name} level)'));
-      
+      history.add(SessionRecord('Sudoku (9x9 Sub-Grid)', DateTime.now(), secs,
+          'Completed active box challenge (${_currentDifficulty.name})'));
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         showDialog<void>(
           context: context,
           barrierDismissible: false,
           builder: (ctx) => AlertDialog(
-            title: const Text('Well done!'),
-            content: Text('You solved the puzzle in ${fmtSeconds(secs)}.'),
+            title: const Text('Box Completed!'),
+            content: Text('You successfully filled the target 3x3 box in ${fmtSeconds(secs)}.'),
             actions: [
               TextButton(
                 onPressed: () {
                   Navigator.pop(ctx);
-                  setState(_generateRandomPuzzle);
+                  setState(_generateSubGridPuzzle);
                 },
-                child: const Text('Play again'),
+                child: const Text('Play Again'),
               ),
               TextButton(
                 onPressed: () {
@@ -160,10 +202,10 @@ class _SudokuScreenState extends State<SudokuScreen> {
   Widget build(BuildContext context) {
     final conflictingIndices = _findConflictingIndices();
     final sidebarPool = _getSidebarPool();
-    _checkSolved(conflictingIndices, sidebarPool);
+    _checkSolved(conflictingIndices);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Sudoku Training')),
+      appBar: AppBar(title: const Text('9x9 Sudoku - Focused Box Training')),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(16),
@@ -177,23 +219,21 @@ class _SudokuScreenState extends State<SudokuScreen> {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Text(
-                  "Today's level: ${currentDifficulty?.label ?? _currentDifficulty.name.toUpperCase()}",
+                  "Active Challenge: Fill Center 3x3 Box (${_currentDifficulty.name.toUpperCase()})",
                   textAlign: TextAlign.center,
                   style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w700, color: kTeal),
+                      fontSize: 16, fontWeight: FontWeight.w700, color: kTeal),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               const Text(
-                "3x3 Sudoku Mini Puzzle",
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: kInk),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                "Each row and column must contain digits 1, 2, and 3",
+                "Surrounding 8 boxes provide context. Complete the active box!",
                 style: TextStyle(fontSize: 13, color: Colors.black54),
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
+
+              // Difficulty Selector
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: PuzzleDifficulty.values.map((difficulty) {
@@ -206,163 +246,188 @@ class _SudokuScreenState extends State<SudokuScreen> {
                       onPressed: () {
                         setState(() {
                           _currentDifficulty = difficulty;
-                          _generateRandomPuzzle();
+                          _generateSubGridPuzzle();
                         });
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: isSelected ? kTeal : Colors.grey[300],
                         foregroundColor: isSelected ? Colors.white : Colors.black87,
                         elevation: isSelected ? 2 : 0,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                       ),
-                      child: Text(
-                        label,
-                        style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                        ),
-                      ),
+                      child: Text(label, style: TextStyle(fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
                     ),
                   );
                 }).toList(),
               ),
               const SizedBox(height: 20),
+
+              // Full 9x9 Sudoku Grid UI
               Container(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.all(4),
                 decoration: BoxDecoration(
-                  color: Colors.blueGrey,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.blueGrey, width: 3),
+                  color: kInk,
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                width: 280,
-                height: 280,
+                width: 340,
+                height: 340,
                 child: GridView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    crossAxisSpacing: 8,
-                    mainAxisSpacing: 8,
+                    crossAxisCount: 9,
+                    crossAxisSpacing: 2,
+                    mainAxisSpacing: 2,
                   ),
-                  itemCount: _board.length,
+                  itemCount: 81,
                   itemBuilder: (context, index) {
-                    final isConflicting = conflictingIndices.contains(index);
+                    int row = index ~/ 9;
+                    int col = index % 9;
+                    int boxIndex = (row ~/ 3) * 3 + (col ~/ 3);
+                    
+                    bool isActiveBox = (boxIndex == _activeBoxIndex);
+                    bool isLocked = _isInitialCell[index];
                     final tileValue = _board[index];
+                    final isConflicting = conflictingIndices.contains(index);
 
                     return DragTarget<Map<String, dynamic>>(
                       onAcceptWithDetails: (details) {
-                        setState(() {
-                          final data = details.data;
-                          final String from = data['from'];
-                          final int draggedValue = data['value'];
+                        if (!isLocked && isActiveBox) {
+                          setState(() {
+                            final data = details.data;
+                            final String from = data['from'];
+                            final int draggedValue = data['value'];
 
-                          if (from == 'board') {
-                            final int originalIndex = data['index'];
-                            final temp = _board[index];
-                            _board[index] = _board[originalIndex];
-                            _board[originalIndex] = temp;
-                          } else if (from == 'sidebar') {
-                            _board[index] = draggedValue;
-                          }
-                        });
+                            if (from == 'board') {
+                              int originalIndex = data['index'];
+                              if (!_isInitialCell[originalIndex]) {
+                                final temp = _board[index];
+                                _board[index] = _board[originalIndex];
+                                _board[originalIndex] = temp;
+                              }
+                            } else if (from == 'sidebar') {
+                              _board[index] = draggedValue;
+                            }
+                          });
+                        }
                       },
                       builder: (context, candidateData, rejectedData) {
-                        if (tileValue == null) {
-                          return _buildTile(null);
-                        }
-
-                        return Draggable<Map<String, dynamic>>(
-                          data: {'from': 'board', 'index': index, 'value': tileValue},
-                          dragAnchorStrategy: pointerDragAnchorStrategy,
-                          feedback: Material(
-                            color: Colors.transparent,
-                            child: _buildTile(tileValue, isDragging: true, hasConflict: isConflicting),
+                        return GestureDetector(
+                          onTap: () {
+                            if (!isLocked && isActiveBox && tileValue != null) {
+                              setState(() {
+                                _board[index] = null;
+                              });
+                            }
+                          },
+                          child: Container(
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: isActiveBox
+                                  ? (isLocked ? Colors.blueGrey[100] : Colors.white)
+                                  : Colors.grey[200],
+                              border: Border.all(
+                                color: isConflicting ? Colors.red : Colors.grey[400]!,
+                                width: isConflicting ? 2 : 0.5,
+                              ),
+                            ),
+                            child: tileValue != null
+                                ? (isLocked || !isActiveBox
+                                    ? Text('$tileValue',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                            color: isActiveBox ? Colors.black87 : Colors.grey[600]))
+                                    : Draggable<Map<String, dynamic>>(
+                                        data: {'from': 'board', 'index': index, 'value': tileValue},
+                                        feedback: Material(
+                                          color: Colors.transparent,
+                                          child: Container(
+                                            width: 32,
+                                            height: 32,
+                                            decoration: BoxDecoration(color: kTeal, borderRadius: BorderRadius.circular(4)),
+                                            alignment: Alignment.center,
+                                            child: Text('$tileValue',
+                                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                                          ),
+                                        ),
+                                        childWhenDragging: Opacity(
+                                          opacity: 0.3,
+                                          child: Text('$tileValue', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                                        ),
+                                        child: Text('$tileValue',
+                                            style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14,
+                                                color: isConflicting ? Colors.red : kTeal)),
+                                      ))
+                                : const SizedBox.shrink(),
                           ),
-                          childWhenDragging: Opacity(
-                            opacity: 0.2,
-                            child: _buildTile(tileValue, hasConflict: isConflicting),
-                          ),
-                          child: _buildTile(tileValue, hasConflict: isConflicting),
                         );
                       },
                     );
                   },
                 ),
               ),
+
               const SizedBox(height: 20),
               const Text(
-                "Available Inventory (Drag to Grid)",
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500, color: Colors.black54),
+                "Active Box Inventory (Drag numbers into the center box)",
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: Colors.black54),
               ),
               const SizedBox(height: 10),
-              DragTarget<Map<String, dynamic>>(
-                onAcceptWithDetails: (details) {
-                  setState(() {
-                    final data = details.data;
-                    if (data['from'] == 'board') {
-                      final int originalIndex = data['index'];
-                      _board[originalIndex] = null;
-                    }
-                  });
-                },
-                builder: (context, candidateData, rejectedData) {
-                  return AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    width: 320,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: candidateData.isNotEmpty ? Colors.red.withValues(alpha: 0.1) : Colors.grey[200],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: candidateData.isNotEmpty ? Colors.red : Colors.grey[400]!,
-                        width: 2,
-                      ),
-                    ),
-                    child: sidebarPool.isEmpty && !_board.contains(null) && conflictingIndices.isEmpty
-                        ? const Center(
-                            child: Text(
-                              "Solved!",
-                              style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16),
+
+              // Inventory Pool for Active Box
+              Container(
+                width: 320,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.grey[100],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: sidebarPool.isEmpty
+                    ? const Center(
+                        child: Text("All slots filled!",
+                            style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)))
+                    : Wrap(
+                        alignment: WrapAlignment.center,
+                        spacing: 8.0,
+                        runSpacing: 8.0,
+                        children: sidebarPool.map((number) {
+                          return Draggable<Map<String, dynamic>>(
+                            data: {'from': 'sidebar', 'value': number},
+                            feedback: Material(
+                              color: Colors.transparent,
+                              child: Container(
+                                width: 40,
+                                height: 40,
+                                decoration: BoxDecoration(color: kTeal, borderRadius: BorderRadius.circular(8)),
+                                alignment: Alignment.center,
+                                child: Text('$number',
+                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+                              ),
                             ),
-                          )
-                        : Wrap(
-                            alignment: WrapAlignment.center,
-                            spacing: 8.0,
-                            runSpacing: 8.0,
-                            children: sidebarPool.map((number) {
-                              return Draggable<Map<String, dynamic>>(
-                                data: {'from': 'sidebar', 'value': number},
-                                dragAnchorStrategy: pointerDragAnchorStrategy,
-                                feedback: Material(
-                                  color: Colors.transparent,
-                                  child: _buildTile(number, isDragging: true),
-                                ),
-                                childWhenDragging: Opacity(
-                                  opacity: 0.3,
-                                  child: _buildTile(number),
-                                ),
-                                child: _buildTile(number),
-                              );
-                            }).toList(),
-                          ),
-                  );
-                },
+                            childWhenDragging: Opacity(
+                              opacity: 0.3,
+                              child: _buildInventoryTile(number),
+                            ),
+                            child: _buildInventoryTile(number),
+                          );
+                        }).toList(),
+                      ),
               ),
+
               const SizedBox(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   ElevatedButton.icon(
-                    onPressed: _generateRandomPuzzle,
-                    icon: const Icon(Icons.casino, color: Colors.white),
+                    onPressed: _generateSubGridPuzzle,
+                    icon: const Icon(Icons.refresh, color: Colors.white),
                     label: const Text("New Puzzle", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueGrey,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
+                    style: ElevatedButton.styleFrom(backgroundColor: kTeal),
                   ),
                   const SizedBox(width: 12),
                   OutlinedButton(
@@ -378,40 +443,20 @@ class _SudokuScreenState extends State<SudokuScreen> {
     );
   }
 
-  Widget _buildTile(int? value, {bool isDragging = false, bool hasConflict = false}) {
-    Color tileColor = Colors.white;
-    Color textColor = Colors.black87;
-
-    if (hasConflict) {
-      tileColor = const Color(0xFFFFEBEE);
-      textColor = Colors.red;
-    } else if (isDragging) {
-      tileColor = kTeal;
-      textColor = Colors.white;
-    }
-
+  Widget _buildInventoryTile(int number) {
     return Container(
-      width: 50,
-      height: 50,
+      width: 40,
+      height: 40,
       decoration: BoxDecoration(
-        color: value == null ? Colors.blueGrey.withValues(alpha: 0.3) : tileColor,
+        color: Colors.white,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: hasConflict ? Colors.red : (value == null ? Colors.transparent : Colors.grey[300]!),
-          width: hasConflict ? 2 : 1,
-        ),
-        boxShadow: isDragging
-            ? [const BoxShadow(color: Colors.black12, blurRadius: 6, spreadRadius: 1)]
-            : null,
+        border: Border.all(color: kTeal, width: 2),
+        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4, spreadRadius: 1)],
       ),
       alignment: Alignment.center,
       child: Text(
-        value != null ? '$value' : '',
-        style: TextStyle(
-          color: textColor,
-          fontWeight: FontWeight.bold,
-          fontSize: 22,
-        ),
+        '$number',
+        style: const TextStyle(color: kTeal, fontWeight: FontWeight.bold, fontSize: 18),
       ),
     );
   }
