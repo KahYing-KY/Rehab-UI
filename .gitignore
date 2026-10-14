@@ -22,3 +22,10 @@
 ehthumbs.db
 Thumbs.db
 Desktop.ini
+
+# Ignore native platform folders (web-only project)
+/android/
+/ios/
+/windows/
+/macos/
+/linux/
