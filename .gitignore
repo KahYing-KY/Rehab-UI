@@ -45,3 +45,11 @@ Thumbs.db
 .widget_preview/
 app.*.symbols
 app.*.map.json
+
+/build/
+/.dart_tool/
+/.packages
+flutter_*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+.vscode/
