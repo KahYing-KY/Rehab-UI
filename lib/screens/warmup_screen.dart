@@ -3,8 +3,9 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../main.dart';
 
-enum WarmUpPhase { idle, waitingLift, carrying, done }
+enum WarmUpPhase { idle, playing, done }
 
+// Top-level helper function for grid cell coordinates
 String cellLabel(int index) => '(${index ~/ 3 + 1},${index % 3 + 1})';
 
 class MoveResult {
@@ -33,17 +34,17 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
   List<int> _path = [];
   WarmUpPhase _phase = WarmUpPhase.idle;
   int _move = 0;
-  int? _tileAt;
+  int? _tileAt; // Current position of the tile
   int _mistakesThisMove = 0;
   double _reactionTime = 0;
   final List<MoveResult> _results = [];
   late String _message =
-      'Pick a tile and move it as instructed.\nPress Start $_name to begin.';
+      'Drag the tile to the mole as quickly as possible!\nPress Start $_name to begin.';
 
   WarmUpSummary? _summary;
   Difficulty? _level;
 
-  String get _name => widget.coolDown ? 'Cool-Down' : 'Warm-Up';
+  String get _name => widget.coolDown ? 'Cool-Down' : 'Whack-a-Mole Assessment';
   double get _totalSeconds => _total.elapsedMilliseconds / 1000;
   double get _lapSeconds => _lap.elapsedMilliseconds / 1000;
 
@@ -53,26 +54,20 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     super.dispose();
   }
 
-  String _instruction() {
-    final to = cellLabel(_path[_move]);
-    if (_move == 0) return 'Pick a tile and place it at $to.';
-    return 'Move the tile from ${cellLabel(_path[_move - 1])} to $to.';
-  }
-
   void _start() {
     setState(() {
       _path = widget.coolDown
           ? List<int>.of(sessionPath ?? generatePath())
           : generatePath();
       _move = 0;
-      _tileAt = null;
+      _tileAt = null; // Start with tile in inventory or starting slot
       _mistakesThisMove = 0;
       _reactionTime = 0;
       _results.clear();
       _summary = null;
       _level = null;
-      _phase = WarmUpPhase.waitingLift;
-      _message = _instruction();
+      _phase = WarmUpPhase.playing;
+      _message = 'Whack the mole! Drag the tile to cell ${cellLabel(_path[_move])}.';
       _total
         ..reset()
         ..start();
@@ -86,61 +81,49 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     });
   }
 
-  void _lift() {
-    if (_phase != WarmUpPhase.waitingLift) return;
-    setState(() {
+  void _onTilePickedUp() {
+    if (_reactionTime == 0 && _lap.isRunning) {
       _reactionTime = _lapSeconds;
-      _lap
-        ..reset()
-        ..start();
-      _phase = WarmUpPhase.carrying;
-      _message = 'Now place it at ${cellLabel(_path[_move])}.';
-    });
+    }
   }
 
-  void _tapCell(int i) {
-    if (_phase != WarmUpPhase.waitingLift && _phase != WarmUpPhase.carrying) {
-      return;
-    }
-    final target = _path[_move];
-    final int? from = _move == 0 ? null : _path[_move - 1];
+  void _handleTileDrop(int targetCellIndex) {
+    if (_phase != WarmUpPhase.playing) return;
 
-    if (_phase == WarmUpPhase.waitingLift) {
-      if (from == null) {
-        setState(() => _message = 'Press "Pick Up Tile" first.');
-      } else if (i == from) {
-        _lift();
-      } else {
-        setState(() =>
-            _message = 'Tap the tile at ${cellLabel(from)} to pick it up.');
-      }
-      return;
-    }
+    final currentTarget = _path[_move];
+    final int? from = _tileAt;
 
-    if (from != null && i == from) return;
-    if (i != target) {
+    if (targetCellIndex != currentTarget) {
+      // Wrong drop location
       setState(() {
         _mistakesThisMove++;
-        _message = 'Not there - place it at ${cellLabel(target)}.';
+        _message = 'Missed! Drag to the active mole at ${cellLabel(currentTarget)}.';
       });
       return;
     }
 
+    // Correct placement (Mole Hit!)
     setState(() {
-      final dist = from == null ? 0.0 : cellDistance(from, target);
+      final dist = from == null ? 0.0 : cellDistance(from, currentTarget);
       _results.add(MoveResult(
-          _reactionTime, _lapSeconds, dist, _mistakesThisMove, from == null));
-      _tileAt = target;
+          _reactionTime == 0 ? _lapSeconds : _reactionTime,
+          _lapSeconds,
+          dist,
+          _mistakesThisMove,
+          from == null));
+
+      _tileAt = currentTarget;
       _move++;
       _mistakesThisMove = 0;
+      _reactionTime = 0;
+
       if (_move >= _path.length) {
         _finish();
       } else {
-        _phase = WarmUpPhase.waitingLift;
         _lap
           ..reset()
           ..start();
-        _message = 'Good! ${_instruction()}';
+        _message = 'Great hit! Next mole appeared at ${cellLabel(_path[_move])}.';
       }
     });
   }
@@ -187,7 +170,7 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
       sessionPath = List<int>.of(_path);
       warmUpDone = true;
       history.add(SessionRecord(
-        'Warm-Up',
+        'Warm-Up (Whack-a-Mole)',
         DateTime.now(),
         summary.totalSeconds,
         'Level set: ${level.label} - avg move '
@@ -201,47 +184,21 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_name)),
+      appBar: AppBar(title: Text(_name), centerTitle: true),
       body: SafeArea(
         child: _phase == WarmUpPhase.done ? _buildResult() : _buildTest(),
       ),
     );
   }
 
-  Widget _bottomAction() {
-    if (_phase == WarmUpPhase.idle) {
-      return FilledButton(
-        onPressed: _start,
-        style: FilledButton.styleFrom(
-            backgroundColor: kBlue, minimumSize: const Size.fromHeight(56)),
-        child: Text('Start $_name',
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-      );
-    }
-    if (_phase == WarmUpPhase.waitingLift && _move == 0) {
-      return FilledButton.icon(
-        onPressed: _lift,
-        icon: const Icon(Icons.touch_app),
-        label: const Text('Pick Up Tile',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
-        style: FilledButton.styleFrom(
-            backgroundColor: kTeal, minimumSize: const Size.fromHeight(56)),
-      );
-    }
-    return Center(
-      child: Text('Move ${_move + 1} of ${_path.length}',
-          style: const TextStyle(
-              fontSize: 18, fontWeight: FontWeight.w600, color: kBlue)),
-    );
-  }
-
   Widget _buildTest() {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Column(
         children: [
+          // Header Status
           SizedBox(
-            height: 60,
+            height: 50,
             child: Center(
               child: Text(
                 _message,
@@ -249,38 +206,84 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontSize: 19, fontWeight: FontWeight.w600, color: kInk),
+                    fontSize: 17, fontWeight: FontWeight.w600, color: kInk),
               ),
             ),
           ),
-          Text(fmtSeconds(_totalSeconds),
-              style: const TextStyle(
-                  fontSize: 34, fontWeight: FontWeight.w700, color: kTeal)),
+          Text(
+            fmtSeconds(_totalSeconds),
+            style: const TextStyle(
+                fontSize: 32, fontWeight: FontWeight.bold, color: kTeal),
+          ),
           const SizedBox(height: 8),
+
+          // Responsive 3x3 Whack-a-Mole Grid
           Expanded(
             child: LayoutBuilder(
-              builder: (context, c) {
-                final side = min(c.maxWidth, c.maxHeight);
+              builder: (context, constraints) {
+                final side = min(constraints.maxWidth, constraints.maxHeight);
                 return Center(
-                  child: SizedBox(width: side, height: side, child: _board()),
+                  child: SizedBox(
+                    width: side,
+                    height: side,
+                    child: _buildBoard(),
+                  ),
                 );
               },
             ),
           ),
-          const SizedBox(height: 8),
-          SizedBox(height: 56, child: _bottomAction()),
-          const SizedBox(height: 4),
-          const Text(
-            'Simulation Mode: pick-up and placement are simulated with taps.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, color: Colors.black54),
+
+          const SizedBox(height: 12),
+
+          // Inventory / Starting Tile Pool (when tile is not on board)
+          if (_phase == WarmUpPhase.playing && _tileAt == null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Draggable<String>(
+                data: 'tile',
+                onDragStarted: _onTilePickedUp,
+                feedback: Material(
+                  color: Colors.transparent,
+                  child: _buildTileUI(isDragging: true),
+                ),
+                childWhenDragging: Opacity(
+                  opacity: 0.3,
+                  child: _buildTileUI(),
+                ),
+                child: _buildTileUI(),
+              ),
+            ),
+
+          // Bottom Action
+          SizedBox(
+            height: 52,
+            child: _phase == WarmUpPhase.idle
+                ? FilledButton(
+                    onPressed: _start,
+                    style: FilledButton.styleFrom(
+                        backgroundColor: kBlue,
+                        minimumSize: const Size.fromHeight(52)),
+                    child: Text('Start $_name',
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold)),
+                  )
+                : Center(
+                    child: Text(
+                      'Target ${_move + 1} of ${_path.length}',
+                      style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: kBlue),
+                    ),
+                  ),
           ),
+          const SizedBox(height: 4),
         ],
       ),
     );
   }
 
-  Widget _board() {
+  Widget _buildBoard() {
     return Column(
       children: List.generate(
         3,
@@ -290,8 +293,8 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
               3,
               (c) => Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.all(5),
-                  child: _cell(r * 3 + c),
+                  padding: const EdgeInsets.all(6),
+                  child: _buildCell(r * 3 + c),
                 ),
               ),
             ),
@@ -301,68 +304,111 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     );
   }
 
-  Widget _cell(int i) {
-    final carrying = _phase == WarmUpPhase.carrying;
-    final hasTile = _tileAt == i;
-    final lifted = carrying && hasTile;
-    final isTarget = carrying && _path[_move] == i;
+  Widget _buildCell(int index) {
+    final bool isTargetMole =
+        _phase == WarmUpPhase.playing && _path[_move] == index;
+    final bool hasTile = _tileAt == index;
 
-    return GestureDetector(
-      onTap: () => _tapCell(i),
-      child: Container(
-        decoration: BoxDecoration(
-          color: isTarget ? const Color(0xFFE3ECF8) : Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: isTarget ? kBlue : const Color(0xFFE0E0E0),
-            width: isTarget ? 3 : 1.5,
-          ),
-        ),
-        alignment: Alignment.center,
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (hasTile)
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: lifted ? const Color(0xFFB2DFE4) : kTeal,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: const Text('Tile',
-                        style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white)),
-                  ),
-                if (isTarget)
-                  const Text('Move here',
-                      style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          color: kBlue)),
-                Text(cellLabel(i), style: const TextStyle(fontSize: 16)),
-              ],
+    return DragTarget<String>(
+      onAcceptWithDetails: (details) {
+        _handleTileDrop(index);
+      },
+      builder: (context, candidateData, rejectedData) {
+        return Container(
+          decoration: BoxDecoration(
+            color: isTargetMole
+                ? const Color(0xFFFFEBEE) // Light red highlight for active mole
+                : Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isTargetMole ? Colors.redAccent : const Color(0xFFE0E0E0),
+              width: isTargetMole ? 3.5 : 1.5,
             ),
+            boxShadow: isTargetMole
+                ? [
+                    BoxShadow(
+                      color: Colors.redAccent.withValues(alpha: 0.3),
+                      blurRadius: 8,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : [],
           ),
-        ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // Cell Coordinate Label
+              Positioned(
+                bottom: 6,
+                right: 8,
+                child: Text(cellLabel(index),
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade500,
+                        fontWeight: FontWeight.w500)),
+              ),
+
+              // Mole Indicator (Pop-Up Target)
+              if (isTargetMole && !hasTile)
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.stars_rounded, size: 36, color: Colors.redAccent),
+                    SizedBox(height: 2),
+                    Text('HIT!',
+                        style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.redAccent)),
+                  ],
+                ),
+
+              // Draggable Tile inside cell
+              if (hasTile)
+                Draggable<String>(
+                  data: 'tile',
+                  onDragStarted: _onTilePickedUp,
+                  feedback: Material(
+                    color: Colors.transparent,
+                    child: _buildTileUI(isDragging: true),
+                  ),
+                  childWhenDragging: Opacity(
+                    opacity: 0.3,
+                    child: _buildTileUI(),
+                  ),
+                  child: _buildTileUI(),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildTileUI({bool isDragging = false}) {
+    return Container(
+      width: isDragging ? 70 : 64,
+      height: isDragging ? 70 : 64,
+      decoration: BoxDecoration(
+        color: kTeal,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: const [
+          BoxShadow(
+              color: Colors.black26, blurRadius: 6, offset: Offset(0, 3))
+        ],
+      ),
+      alignment: Alignment.center,
+      child: const Text(
+        'Tile',
+        style: TextStyle(
+            fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
       ),
     );
   }
 
-  String _change(double before, double after, String less, String more) {
-    if ((after - before).abs() < 0.05) return 'about the same';
-    return after < before ? less : more;
-  }
-
   Widget _line(String text) => Padding(
         padding: const EdgeInsets.only(bottom: 6),
-        child: Text(text, style: const TextStyle(fontSize: 17)),
+        child: Text(text, style: const TextStyle(fontSize: 16)),
       );
 
   Widget _buildResult() {
@@ -375,19 +421,15 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
       headline = 'Compared with your warm-up';
       rows = [
         _line('Movement time: ${fmtSeconds(w.avgMovement)} to '
-            '${fmtSeconds(s.avgMovement)} '
-            '(${_change(w.avgMovement, s.avgMovement, 'faster', 'slower')})'),
+            '${fmtSeconds(s.avgMovement)}'),
         _line('Speed: ${w.avgSpeed.toStringAsFixed(2)} to '
-            '${s.avgSpeed.toStringAsFixed(2)} squares/s '
-            '(${_change(w.avgSpeed, s.avgSpeed, 'slower', 'faster')})'),
+            '${s.avgSpeed.toStringAsFixed(2)} squares/s'),
         _line('Reaction time: ${fmtSeconds(w.avgReaction)} to '
-            '${fmtSeconds(s.avgReaction)} '
-            '(${_change(w.avgReaction, s.avgReaction, 'faster', 'slower')})'),
-        _line('Wrong placements: ${w.mistakes} to ${s.mistakes} '
-            '(${_change(w.mistakes.toDouble(), s.mistakes.toDouble(), 'fewer', 'more')})'),
+            '${fmtSeconds(s.avgReaction)}'),
+        _line('Wrong placements: ${w.mistakes} to ${s.mistakes}'),
       ];
     } else {
-      headline = "Today's level: ${_level?.label ?? 'Not set'}";
+      headline = "Today's Level: ${_level?.label ?? 'Not set'}";
       rows = [
         _line('Average movement time: ${fmtSeconds(s.avgMovement)}'),
         _line('Average reaction time: ${fmtSeconds(s.avgReaction)}'),
@@ -396,7 +438,7 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
       ];
     }
 
-    return SingleChildScrollView(
+    return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -404,7 +446,7 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
           Text('$_name complete!',
               textAlign: TextAlign.center,
               style: const TextStyle(
-                  fontSize: 28, fontWeight: FontWeight.w700, color: kInk)),
+                  fontSize: 26, fontWeight: FontWeight.bold, color: kInk)),
           const SizedBox(height: 16),
           Container(
             padding: const EdgeInsets.all(20),
@@ -418,32 +460,32 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
               children: [
                 Text(headline,
                     style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.w700,
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
                         color: kTeal)),
                 const SizedBox(height: 12),
                 ...rows,
               ],
             ),
           ),
-          const SizedBox(height: 20),
+          const Spacer(),
           FilledButton(
             onPressed: () => Navigator.pop(context),
             style: FilledButton.styleFrom(
                 backgroundColor: kTeal,
-                minimumSize: const Size.fromHeight(58)),
+                minimumSize: const Size.fromHeight(54)),
             child: Text(widget.coolDown ? 'Finish Session' : 'Continue',
                 style:
-                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           ),
           if (!widget.coolDown) ...[
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
             OutlinedButton(
               onPressed: _start,
               style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(52)),
+                  minimumSize: const Size.fromHeight(48)),
               child:
-                  const Text('Redo Warm-Up', style: TextStyle(fontSize: 17)),
+                  const Text('Redo Assessment', style: TextStyle(fontSize: 16)),
             ),
           ],
         ],
