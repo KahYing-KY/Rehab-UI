@@ -34,13 +34,13 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       sw.reset();
       sw.start();
 
-      // 1. Generate a valid 3x3 Latin square solution[cite: 4]
+      // 1. Generate a valid 3x3 Latin square solution
       final List<int> firstRow = List.generate(3, (i) => i + 1)..shuffle(_random);
       final List<int> secondRow = List.generate(3, (i) => firstRow[(i + 1) % 3]);
       final List<int> thirdRow = List.generate(3, (i) => firstRow[(i + 2) % 3]);
       _solutionGrid = [...firstRow, ...secondRow, ...thirdRow];
 
-      // 2. Place exactly ONE '1', ONE '2', and ONE '3' as initial clues across the board[cite: 4]
+      // 2. Place exactly ONE '1', ONE '2', and ONE '3' as initial clues across the board
       _board = List.filled(9, null);
       List<int> availableIndices = List.generate(9, (i) => i)..shuffle(_random);
       
@@ -56,7 +56,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     });
   }
 
-  // Inventory pool for active row[cite: 4]
+  // Inventory pool for active row
   List<int> _getInventoryPool() {
     int startIdx = _activeRowIndex * 3;
     List<int> activeRowSlots = [
@@ -72,11 +72,11 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     return pool;
   }
 
-  // Check BOTH row and column conflicts to strictly enforce Latin Square rules[cite: 4]
+  // Check BOTH row and column conflicts to strictly enforce Latin Square rules
   Set<int> _findConflicts() {
     final Set<int> conflicts = {};
 
-    // 1. Check all rows for duplicates[cite: 4]
+    // 1. Check all rows for duplicates
     for (int r = 0; r < 3; r++) {
       Map<int, List<int>> rowCounts = {};
       for (int c = 0; c < 3; c++) {
@@ -93,7 +93,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       });
     }
 
-    // 2. Check all columns for duplicates[cite: 4]
+    // 2. Check all columns for duplicates
     for (int c = 0; c < 3; c++) {
       Map<int, List<int>> colCounts = {};
       for (int r = 0; r < 3; r++) {
@@ -120,7 +120,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       if (_board[startIdx + i] == null) rowComplete = false;
     }
 
-    // Only allow advancing if the active row is complete AND there are zero row/column conflicts[cite: 4]
+    // Only allow advancing if the active row is complete AND there are zero row/column conflicts
     if (rowComplete && conflicts.isEmpty && !_isDemoCompleted) {
       sw.stop();
       final secs = sw.elapsedMilliseconds / 1000;
@@ -184,217 +184,243 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isDemoCompleted ? 'Demo Finished!' : 'Interim Demo: Row ${_activeRowIndex + 1} of 3', style: const TextStyle(fontWeight: FontWeight.bold)),
+        title: Text(
+          _isDemoCompleted ? 'Demo Finished!' : 'Interim Demo: Row ${_activeRowIndex + 1} of 3',
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
         centerTitle: true,
       ),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 650),
-            child: ListView(
-              padding: const EdgeInsets.all(20),
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFDFF1F1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _isDemoCompleted ? 'All Rows Completed!' : 'Active Row Focus: ${_activeRowIndex + 1}',
-                        style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: kTeal),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _isDemoCompleted
-                            ? 'Great job demonstrating the physical board progression!'
-                            : 'Board starts with 1, 2, 3 initial clues. Complete rows following Latin Square rules (no duplicate numbers in any row or column).',
-                        style: const TextStyle(fontSize: 15, color: kInk),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-
-                // 3x3 GRID[cite: 4]
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: kTeal.withValues(alpha: 0.3), width: 2),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.05),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: GridView.builder(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 8,
-                      mainAxisSpacing: 8,
+            constraints: const BoxConstraints(maxWidth: 600),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+              child: Column(
+                children: [
+                  // 1. Header Banner Box
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFDFF1F1),
+                      borderRadius: BorderRadius.circular(16),
                     ),
-                    itemCount: 9,
-                    itemBuilder: (context, index) {
-                      int row = index ~/ 3;
-                      bool isActiveRow = (row == _activeRowIndex && !_isDemoCompleted);
-                      final val = _board[index];
-                      bool isInitialClue = (val != null && val == _solutionGrid[index] && _isOriginalClue(index));
-                      bool hasConflict = conflicts.contains(index);
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _isDemoCompleted ? 'All Rows Completed!' : 'Active Row Focus: ${_activeRowIndex + 1}',
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: kTeal),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _isDemoCompleted
+                              ? 'Great job demonstrating the physical board progression!'
+                              : 'Complete rows following Latin Square rules (no duplicate numbers in any row or column).',
+                          style: const TextStyle(fontSize: 13, color: kInk),
+                        ),
+                      ],
+                    ),
+                  ),
 
-                      return DragTarget<Map<String, dynamic>>(
-                        onAcceptWithDetails: (details) {
-                          if (isActiveRow && !isInitialClue) {
-                            setState(() {
-                              final data = details.data;
-                              if (data['from'] == 'board') {
-                                int orig = data['index'];
-                                var temp = _board[index];
-                                _board[index] = _board[orig];
-                                _board[orig] = temp;
-                              } else if (data['from'] == 'inventory') {
-                                _board[index] = data['value'];
-                              }
+                  const Spacer(),
 
-                              // Track mistake if the new placement causes a conflict
-                              if (_findConflicts().isNotEmpty) {
-                                _mistakeCount++;
-                              }
-                            });
-                          }
-                        },
-                        builder: (context, candidateData, rejectedData) {
-                          Color bgColor;
-                          Color borderColor;
-                          if (isInitialClue) {
-                            bgColor = const Color(0xFFE1F2F3);
-                            borderColor = kTeal;
-                          } else if (isActiveRow) {
-                            if (hasConflict) {
-                              bgColor = Colors.red.shade50;
-                              borderColor = Colors.red; // Highlights row/column conflicts in red[cite: 4]
-                            } else if (val == null) {
-                              bgColor = Colors.white;
-                              borderColor = kTeal;
-                            } else {
-                              bgColor = const Color(0xFFE1F2F3);
-                              borderColor = kTeal;
-                            }
-                          } else {
-                            bgColor = const Color(0xFFF8FAFC);
-                            borderColor = Colors.grey.shade300;
-                          }
-
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: bgColor,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: borderColor,
-                                width: isActiveRow ? 3 : 1.5,
-                              ),
+                  // 2. 3x3 GRID (Flexible Responsive Fit)
+                  Flexible(
+                    flex: 6,
+                    child: FittedBox(
+                      fit: BoxFit.contain,
+                      child: Container(
+                        width: 340,
+                        height: 340,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: kTeal.withValues(alpha: 0.3), width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.05),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
                             ),
-                            alignment: Alignment.center,
-                            child: val != null
-                                ? (isInitialClue
-                                    ? Text('$val', style: TextStyle(fontSize: 24, color: kTeal, fontWeight: FontWeight.bold))
-                                    : (isActiveRow
-                                        ? Draggable<Map<String, dynamic>>(
-                                            data: {'from': 'board', 'index': index, 'value': val},
-                                            feedback: Material(
-                                              color: Colors.transparent,
-                                              child: Container(
-                                                width: 70,
-                                                height: 70,
-                                                decoration: BoxDecoration(color: hasConflict ? Colors.red : kTeal, borderRadius: BorderRadius.circular(12)),
-                                                alignment: Alignment.center,
-                                                child: Text('$val', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
-                                              ),
-                                            ),
-                                            childWhenDragging: Opacity(
-                                              opacity: 0.3,
-                                              child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
-                                            ),
-                                            child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
-                                          )
-                                        : Text('$val', style: TextStyle(fontSize: 24, color: kTeal, fontWeight: FontWeight.bold))))
-                                : const Text('Drop', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                          );
-                        },
-                      );
-                    },
-                  ),
-                ),
+                          ],
+                        ),
+                        child: GridView.builder(
+                          physics: const NeverScrollableScrollPhysics(),
+                          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 3,
+                            crossAxisSpacing: 8,
+                            mainAxisSpacing: 8,
+                          ),
+                          itemCount: 9,
+                          itemBuilder: (context, index) {
+                            int row = index ~/ 3;
+                            bool isActiveRow = (row == _activeRowIndex && !_isDemoCompleted);
+                            final val = _board[index];
+                            bool isInitialClue = (val != null && val == _solutionGrid[index] && _isOriginalClue(index));
+                            bool hasConflict = conflicts.contains(index);
 
-                const SizedBox(height: 24),
-                const Text(
-                  'Active Row Inventory Tiles',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: kInk),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 12),
+                            return DragTarget<Map<String, dynamic>>(
+                              onAcceptWithDetails: (details) {
+                                if (isActiveRow && !isInitialClue) {
+                                  setState(() {
+                                    final data = details.data;
+                                    if (data['from'] == 'board') {
+                                      int orig = data['index'];
+                                      var temp = _board[index];
+                                      _board[index] = _board[orig];
+                                      _board[orig] = temp;
+                                    } else if (data['from'] == 'inventory') {
+                                      _board[index] = data['value'];
+                                    }
 
-                // Inventory Pool Box[cite: 4]
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  alignment: Alignment.center,
-                  child: _isDemoCompleted
-                      ? const Text("All Rows Solved Successfully!", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))
-                      : (inventory.isEmpty
-                          ? const Text("Row complete! Advancing...", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 16))
-                          : Wrap(
-                              spacing: 12,
-                              children: inventory.map((numberItem) {
-                                return Draggable<Map<String, dynamic>>(
-                                  data: {'from': 'inventory', 'value': numberItem},
-                                  feedback: Material(
-                                    color: Colors.transparent,
-                                    child: Container(
-                                      width: 60,
-                                      height: 60,
-                                      decoration: BoxDecoration(color: kTeal, borderRadius: BorderRadius.circular(12)),
-                                      alignment: Alignment.center,
-                                      child: Text('$numberItem', style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
+                                    // Track mistake if the new placement causes a conflict
+                                    if (_findConflicts().isNotEmpty) {
+                                      _mistakeCount++;
+                                    }
+                                  });
+                                }
+                              },
+                              builder: (context, candidateData, rejectedData) {
+                                Color bgColor;
+                                Color borderColor;
+                                if (isInitialClue) {
+                                  bgColor = const Color(0xFFE1F2F3);
+                                  borderColor = kTeal;
+                                } else if (isActiveRow) {
+                                  if (hasConflict) {
+                                    bgColor = Colors.red.shade50;
+                                    borderColor = Colors.red;
+                                  } else if (val == null) {
+                                    bgColor = Colors.white;
+                                    borderColor = kTeal;
+                                  } else {
+                                    bgColor = const Color(0xFFE1F2F3);
+                                    borderColor = kTeal;
+                                  }
+                                } else {
+                                  bgColor = const Color(0xFFF8FAFC);
+                                  borderColor = Colors.grey.shade300;
+                                }
+
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: bgColor,
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: borderColor,
+                                      width: isActiveRow ? 3 : 1.5,
                                     ),
                                   ),
-                                  childWhenDragging: Opacity(opacity: 0.3, child: _buildTile(numberItem)),
-                                  child: _buildTile(numberItem),
+                                  alignment: Alignment.center,
+                                  child: val != null
+                                      ? (isInitialClue
+                                          ? Text('$val', style: const TextStyle(fontSize: 24, color: kTeal, fontWeight: FontWeight.bold))
+                                          : (isActiveRow
+                                              ? Draggable<Map<String, dynamic>>(
+                                                  data: {'from': 'board', 'index': index, 'value': val},
+                                                  feedback: Material(
+                                                    color: Colors.transparent,
+                                                    child: Container(
+                                                      width: 70,
+                                                      height: 70,
+                                                      decoration: BoxDecoration(color: hasConflict ? Colors.red : kTeal, borderRadius: BorderRadius.circular(12)),
+                                                      alignment: Alignment.center,
+                                                      child: Text('$val', style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold)),
+                                                    ),
+                                                  ),
+                                                  childWhenDragging: Opacity(
+                                                    opacity: 0.3,
+                                                    child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
+                                                  ),
+                                                  child: Text('$val', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: hasConflict ? Colors.red : kTeal)),
+                                                )
+                                              : Text('$val', style: const TextStyle(fontSize: 24, color: kTeal, fontWeight: FontWeight.bold))))
+                                      : const Text('Drop', style: TextStyle(color: Colors.grey, fontSize: 12)),
                                 );
-                              }).toList(),
-                            )),
-                ),
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
 
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: _initNewGame,
-                      icon: const Icon(Icons.refresh, color: Colors.white),
-                      label: const Text('Reset Demo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                      style: ElevatedButton.styleFrom(backgroundColor: kTeal),
+                  const Spacer(),
+
+                  // 3. Active Row Inventory Section
+                  Text(
+                    'Active Row Inventory Tiles',
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: kInk),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 6),
+
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.grey.shade300),
                     ),
-                    const SizedBox(width: 12),
-                    OutlinedButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Back to Home'),
-                    ),
-                  ],
-                ),
-              ],
+                    alignment: Alignment.center,
+                    child: _isDemoCompleted
+                        ? const Text("All Rows Solved Successfully!", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))
+                        : (inventory.isEmpty
+                            ? const Text("Row complete! Advancing...", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 15))
+                            : Wrap(
+                                spacing: 12,
+                                children: inventory.map((numberItem) {
+                                  return Draggable<Map<String, dynamic>>(
+                                    data: {'from': 'inventory', 'value': numberItem},
+                                    feedback: Material(
+                                      color: Colors.transparent,
+                                      child: Container(
+                                        width: 50,
+                                        height: 50,
+                                        decoration: BoxDecoration(color: kTeal, borderRadius: BorderRadius.circular(12)),
+                                        alignment: Alignment.center,
+                                        child: Text('$numberItem', style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)),
+                                      ),
+                                    ),
+                                    childWhenDragging: Opacity(opacity: 0.3, child: _buildTile(numberItem)),
+                                    child: _buildTile(numberItem),
+                                  );
+                                }).toList(),
+                              )),
+                  ),
+
+                  const Spacer(),
+
+                  // 4. Action Buttons Footer
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: _initNewGame,
+                        icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
+                        label: const Text('Reset Demo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kTeal,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        ),
+                        child: const Text('Back to Home'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
             ),
           ),
         ),
@@ -408,8 +434,8 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
 
   Widget _buildTile(int numberVal) {
     return Container(
-      width: 60,
-      height: 60,
+      width: 50,
+      height: 50,
       decoration: BoxDecoration(
         color: const Color(0xFFE1F2F3),
         borderRadius: BorderRadius.circular(12),
@@ -418,7 +444,7 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       alignment: Alignment.center,
       child: Text(
         '$numberVal',
-        style: const TextStyle(color: kTeal, fontSize: 26, fontWeight: FontWeight.bold),
+        style: const TextStyle(color: kTeal, fontSize: 22, fontWeight: FontWeight.bold),
       ),
     );
   }
