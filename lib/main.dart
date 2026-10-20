@@ -4,16 +4,13 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
-  // 1. Ensure Flutter framework bindings are initialized
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 2. Initialize Supabase (using placeholder values for now so it doesn't block)
   await Supabase.initialize(
     url: 'https://placeholder.supabase.co',
     publishableKey: 'placeholder-key',
   );
 
-  // 3. Run the app
   runApp(const RehabSudokuApp());
 }
 
@@ -29,9 +26,7 @@ const kInk = Color(0xFF1A1F22);
 // ===========================================================================
 // 2. WARM-UP SETTINGS
 // ===========================================================================
-const int kMoves = 6;
-const double kMinTotalDistance = 9.0;
-const double kMaxTotalDistance = 11.0;
+const int kMoves = 8; // number of pick-and-place tasks in warm-up / cool-down
 const double kHardMaxSeconds = 2.0;
 const double kMediumMaxSeconds = 4.0;
 const int kMistakeLimit = 3;
@@ -63,7 +58,16 @@ Difficulty levelFor(double avgMoveSeconds, int mistakes) {
 bool warmUpDone = false;
 bool trainingStarted = false;
 Difficulty? currentDifficulty;
-List<int>? sessionPath;
+List<WarmUpTask>? sessionTasks;
+
+/// One pick-and-place task. from == null means "take the tile from the bank".
+/// Cells are numbered 0..8 (row-major).
+class WarmUpTask {
+  final String tileId;
+  final int? from;
+  final int to;
+  const WarmUpTask(this.tileId, this.from, this.to);
+}
 
 class WarmUpSummary {
   final double avgMovement;
@@ -87,7 +91,7 @@ void resetSession() {
   warmUpDone = false;
   trainingStarted = false;
   currentDifficulty = null;
-  sessionPath = null;
+  sessionTasks = null;
   warmUpSummary = null;
   coolDownSummary = null;
 }
@@ -98,35 +102,38 @@ double cellDistance(int a, int b) {
   return sqrt((dr * dr + dc * dc).toDouble());
 }
 
-List<int> generatePath() {
+/// Reach Quest style planner: tiles A and B are introduced from the bank,
+/// every other task moves a tile that is already on the board.
+/// Every destination is unique, so a destination is always empty.
+List<WarmUpTask> generateTasks() {
   final rng = Random();
-  List<int> last = [];
-  for (var attempt = 0; attempt < 500; attempt++) {
-    final path = <int>[rng.nextInt(9)];
-    var total = 0.0;
-    for (var m = 0; m < kMoves; m++) {
-      int next;
-      do {
-        next = rng.nextInt(9);
-      } while (next == path.last);
-      total += cellDistance(path.last, next);
-      path.add(next);
+  final positions = List<int>.generate(9, (i) => i)..shuffle(rng);
+  final board = <int, String>{};
+  final tasks = <WarmUpTask>[];
+
+  for (var i = 0; i < kMoves; i++) {
+    final dest = positions[i];
+    String tile;
+    int? src;
+
+    if (i == 0) {
+      tile = 'A';
+      src = null;
+    } else if (i == 2) {
+      tile = 'B';
+      src = null;
+    } else {
+      final occupied = board.keys.toList();
+      src = occupied[rng.nextInt(occupied.length)];
+      tile = board[src]!;
     }
-    last = path;
-    if (total >= kMinTotalDistance && total <= kMaxTotalDistance) return path;
+
+    tasks.add(WarmUpTask(tile, src, dest));
+    if (src != null) board.remove(src);
+    board[dest] = tile;
   }
-  return last;
+  return tasks;
 }
-
-class SessionRecord {
-  final String type;
-  final DateTime date;
-  final double seconds;
-  final String detail;
-  SessionRecord(this.type, this.date, this.seconds, this.detail);
-}
-
-final List<SessionRecord> history = [];
 
 String fmtSeconds(double s) => '${s.toStringAsFixed(1)} s';
 

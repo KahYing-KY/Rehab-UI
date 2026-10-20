@@ -4,6 +4,7 @@ import 'warmup_screen.dart';
 import 'sudoku_screen.dart';
 import 'progress_screen.dart';
 import 'interim_demo_screen.dart';
+import 'rhythm_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -104,6 +105,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   onPressed: warmUpDone
                       ? () => _go(const SudokuScreen())
                       : () => _hint('Please finish your warm-up first.'),
+                ),
+                ActionCard(
+                  icon: Icons.music_note_rounded,
+                  color: kGreen,
+                  title: 'Rhythm Game',
+                  description:
+                      'Tap the lanes in time with the falling notes to train timing and reaction.',
+                  buttonLabel: 'Play Rhythm Game',
+                  onPressed: () => _go(const RhythmGameScreen()),
                 ),
                 ActionCard(
                   icon: Icons.touch_app,

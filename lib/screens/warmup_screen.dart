@@ -1,19 +1,19 @@
 import 'dart:async';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import '../main.dart';
+import 'training_session.dart';
+import 'training_history_service.dart';
 
 enum WarmUpPhase { idle, playing, done }
 
-// Top-level helper function for grid cell coordinates
 String cellLabel(int index) => '(${index ~/ 3 + 1},${index % 3 + 1})';
 
 class MoveResult {
-  final double reaction;
-  final double movement;
-  final double distance;
+  final double reaction; // task shown -> tile lifted
+  final double movement; // tile lifted -> first placement
+  final double distance; // squares moved (0 when from bank)
   final int mistakes;
-  final bool isFirst;
+  final bool isFirst; // true when the tile came from the bank
   MoveResult(
       this.reaction, this.movement, this.distance, this.mistakes, this.isFirst);
 }
@@ -31,15 +31,25 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
   final Stopwatch _lap = Stopwatch();
   Timer? _ticker;
 
-  List<int> _path = [];
+  List<WarmUpTask> _tasks = [];
   WarmUpPhase _phase = WarmUpPhase.idle;
-  int _move = 0;
-  int? _tileAt; // Current position of the tile
-  int _mistakesThisMove = 0;
-  double _reactionTime = 0;
+  int _taskIndex = 0;
+
+  final Map<int, String> _board = {};
+  String? _held;
+  bool _isCorrection = false;
+  int? _correctionFrom;
+
+  bool _gotReaction = false;
+  bool _initialDone = false;
+  double _reaction = 0;
+  double _pickupAt = 0;
+  double _movement = 0;
+  int _mistakesThisTask = 0;
+
   final List<MoveResult> _results = [];
   late String _message =
-      'Drag the tile to the mole as quickly as possible!\nPress Start $_name to begin.';
+      'Pick up the tile and whack the mole as quickly as you can!\nPress Start to begin.';
 
   WarmUpSummary? _summary;
   Difficulty? _level;
@@ -47,6 +57,8 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
   String get _name => widget.coolDown ? 'Cool-Down' : 'Whack-a-Mole Assessment';
   double get _totalSeconds => _total.elapsedMilliseconds / 1000;
   double get _lapSeconds => _lap.elapsedMilliseconds / 1000;
+  WarmUpTask get _task => _tasks[_taskIndex];
+  int? get _expectedSource => _isCorrection ? _correctionFrom : _task.from;
 
   @override
   void dispose() {
@@ -54,20 +66,38 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     super.dispose();
   }
 
+  String _instruction() {
+    final t = _task;
+    return t.from == null
+        ? 'Pick up Tile ${t.tileId} from the bank and whack the mole at ${cellLabel(t.to)}.'
+        : 'Pick up Tile ${t.tileId} at ${cellLabel(t.from!)} and whack the mole at ${cellLabel(t.to)}.';
+  }
+
+  void _resetTaskState() {
+    _gotReaction = false;
+    _initialDone = false;
+    _reaction = 0;
+    _pickupAt = 0;
+    _movement = 0;
+    _mistakesThisTask = 0;
+  }
+
   void _start() {
     setState(() {
-      _path = widget.coolDown
-          ? List<int>.of(sessionPath ?? generatePath())
-          : generatePath();
-      _move = 0;
-      _tileAt = null; // Start with tile in inventory or starting slot
-      _mistakesThisMove = 0;
-      _reactionTime = 0;
+      _tasks = widget.coolDown
+          ? List<WarmUpTask>.of(sessionTasks ?? generateTasks())
+          : generateTasks();
+      _taskIndex = 0;
+      _board.clear();
+      _held = null;
+      _isCorrection = false;
+      _correctionFrom = null;
+      _resetTaskState();
       _results.clear();
       _summary = null;
       _level = null;
       _phase = WarmUpPhase.playing;
-      _message = 'Whack the mole! Drag the tile to cell ${cellLabel(_path[_move])}.';
+      _message = _instruction();
       _total
         ..reset()
         ..start();
@@ -81,68 +111,122 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     });
   }
 
-  void _onTilePickedUp() {
-    if (_reactionTime == 0 && _lap.isRunning) {
-      _reactionTime = _lapSeconds;
+  void _onLift() {
+    if (!_isCorrection && !_gotReaction) {
+      _reaction = _lapSeconds;
+      _gotReaction = true;
     }
+    _pickupAt = _lapSeconds;
   }
 
-  void _handleTileDrop(int targetCellIndex) {
+  // ---- tapping the bank ----
+  void _tapBank(String tile) {
+    if (_phase != WarmUpPhase.playing || _held != null) return;
+    if (_expectedSource != null || tile != _task.tileId) {
+      setState(() => _message = 'Follow the instruction: ${_instruction()}');
+      return;
+    }
+    setState(() {
+      _onLift();
+      _held = tile;
+      _message =
+          'Tile $tile lifted. Whack the mole at ${cellLabel(_task.to)}!';
+    });
+  }
+
+  // ---- tapping a board cell ----
+  void _tapCell(int i) {
     if (_phase != WarmUpPhase.playing) return;
 
-    final currentTarget = _path[_move];
-    final int? from = _tileAt;
-
-    if (targetCellIndex != currentTarget) {
-      // Wrong drop location
+    // PICK UP from the board
+    if (_held == null) {
+      final tile = _board[i];
+      if (tile == null || i != _expectedSource) {
+        setState(() => _message = _isCorrection
+            ? 'Pick up Tile ${_task.tileId} at ${cellLabel(_correctionFrom!)}.'
+            : 'Follow the instruction: ${_instruction()}');
+        return;
+      }
       setState(() {
-        _mistakesThisMove++;
-        _message = 'Missed! Drag to the active mole at ${cellLabel(currentTarget)}.';
+        _onLift();
+        _board.remove(i);
+        _held = tile;
+        _message =
+            'Tile $tile lifted. Whack the mole at ${cellLabel(_task.to)}!';
       });
       return;
     }
 
-    // Correct placement (Mole Hit!)
+    // PLACE the tile
+    if (_board[i] != null) {
+      setState(() => _message =
+          'Cell ${cellLabel(i)} is occupied. Choose an empty cell.');
+      return;
+    }
+
     setState(() {
-      final dist = from == null ? 0.0 : cellDistance(from, currentTarget);
-      _results.add(MoveResult(
-          _reactionTime == 0 ? _lapSeconds : _reactionTime,
-          _lapSeconds,
-          dist,
-          _mistakesThisMove,
-          from == null));
+      final tile = _held!;
+      if (!_initialDone) {
+        _movement = _lapSeconds - _pickupAt;
+        _initialDone = true;
+      }
+      _board[i] = tile;
+      _held = null;
 
-      _tileAt = currentTarget;
-      _move++;
-      _mistakesThisMove = 0;
-      _reactionTime = 0;
-
-      if (_move >= _path.length) {
-        _finish();
+      if (i == _task.to) {
+        _completeTask();
       } else {
-        _lap
-          ..reset()
-          ..start();
-        _message = 'Great hit! Next mole appeared at ${cellLabel(_path[_move])}.';
+        _mistakesThisTask++;
+        _isCorrection = true;
+        _correctionFrom = i;
+        _message =
+            'Missed! Move Tile $tile from ${cellLabel(i)} to the mole at ${cellLabel(_task.to)}.';
       }
     });
+  }
+
+  // Called inside setState
+  void _completeTask() {
+    final t = _task;
+    _results.add(MoveResult(
+      _reaction,
+      _movement,
+      t.from == null ? 0 : cellDistance(t.from!, t.to),
+      _mistakesThisTask,
+      t.from == null,
+    ));
+
+    _isCorrection = false;
+    _correctionFrom = null;
+    _resetTaskState();
+    _taskIndex++;
+
+    if (_taskIndex >= _tasks.length) {
+      _finish();
+    } else {
+      _lap
+        ..reset()
+        ..start();
+      _message = 'Great hit! ${_instruction()}';
+    }
   }
 
   double _avg(Iterable<double> v) =>
       v.isEmpty ? 0 : v.reduce((a, b) => a + b) / v.length;
 
+  // Called inside setState
   void _finish() {
     _total.stop();
     _lap.stop();
     _ticker?.cancel();
     _phase = WarmUpPhase.done;
 
-    final board = _results.where((r) => !r.isFirst).toList();
-    final sumMove = board.fold<double>(0, (a, r) => a + r.movement);
-    final sumDist = board.fold<double>(0, (a, r) => a + r.distance);
+    final boardMoves = _results.where((r) => !r.isFirst).toList();
+    final sumMove = boardMoves.fold<double>(0, (a, r) => a + r.movement);
+    final sumDist = boardMoves.fold<double>(0, (a, r) => a + r.distance);
 
     final summary = WarmUpSummary(
-      avgMovement: _avg(board.map((r) => r.movement)),
+      avgMovement: _avg(boardMoves.map((r) => r.movement)),
       avgReaction: _avg(_results.map((r) => r.reaction)),
       avgSpeed: sumMove > 0 ? sumDist / sumMove : 0,
       mistakes: _results.fold<int>(0, (a, r) => a + r.mistakes),
@@ -153,34 +237,45 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     if (widget.coolDown) {
       coolDownSummary = summary;
       final w = warmUpSummary;
-      history.add(SessionRecord(
-        'Cool-Down',
-        DateTime.now(),
-        summary.totalSeconds,
-        w == null
-            ? 'Avg move ${summary.avgMovement.toStringAsFixed(1)} s'
+      TrainingHistoryService.instance.addSession(TrainingSession(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        activity: 'Cool-Down',
+        date: DateTime.now(),
+        difficulty: currentDifficulty?.label ?? 'Standard',
+        durationSeconds: summary.totalSeconds.round(),
+        completed: true,
+        notes: w == null
+            ? 'Avg move ${summary.avgMovement.toStringAsFixed(1)} s | '
+                '${summary.mistakes} mistake(s)'
             : 'Speed ${w.avgSpeed.toStringAsFixed(2)} to '
-                '${summary.avgSpeed.toStringAsFixed(2)} squares/s vs warm-up',
+                '${summary.avgSpeed.toStringAsFixed(2)} squares/s vs warm-up | '
+                '${summary.mistakes} mistake(s)',
       ));
     } else {
       final level = levelFor(summary.avgMovement, summary.mistakes);
       _level = level;
       currentDifficulty = level;
       warmUpSummary = summary;
-      sessionPath = List<int>.of(_path);
+      sessionTasks = List<WarmUpTask>.of(_tasks);
       warmUpDone = true;
-      history.add(SessionRecord(
-        'Warm-Up (Whack-a-Mole)',
-        DateTime.now(),
-        summary.totalSeconds,
-        'Level set: ${level.label} - avg move '
-            '${summary.avgMovement.toStringAsFixed(1)} s, '
+      TrainingHistoryService.instance.addSession(TrainingSession(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        activity: 'Warm-Up',
+        date: DateTime.now(),
+        difficulty: level.label,
+        durationSeconds: summary.totalSeconds.round(),
+        completed: true,
+        notes: 'Level set: ${level.label} | avg move '
+            '${summary.avgMovement.toStringAsFixed(1)} s | '
             '${summary.mistakes} mistake(s)',
       ));
     }
     _message = '$_name complete!';
   }
 
+  // =========================================================================
+  // UI
+  // =========================================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -196,65 +291,43 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
       child: Column(
         children: [
-          // Header Status
           SizedBox(
-            height: 50,
+            height: 56,
             child: Center(
               child: Text(
                 _message,
                 textAlign: TextAlign.center,
-                maxLines: 2,
+                maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
-                    fontSize: 17, fontWeight: FontWeight.w600, color: kInk),
+                    fontSize: 16, fontWeight: FontWeight.w600, color: kInk),
               ),
             ),
           ),
           Text(
             fmtSeconds(_totalSeconds),
             style: const TextStyle(
-                fontSize: 32, fontWeight: FontWeight.bold, color: kTeal),
+                fontSize: 30, fontWeight: FontWeight.bold, color: kTeal),
           ),
           const SizedBox(height: 8),
-
-          // Responsive 3x3 Whack-a-Mole Grid
           Expanded(
             child: LayoutBuilder(
-              builder: (context, constraints) {
-                final side = min(constraints.maxWidth, constraints.maxHeight);
+              builder: (context, c) {
+                final side =
+                    c.maxWidth < c.maxHeight ? c.maxWidth : c.maxHeight;
                 return Center(
                   child: SizedBox(
                     width: side,
                     height: side,
-                    child: _buildBoard(),
+                    child: _buildBoard(side),
                   ),
                 );
               },
             ),
           ),
-
-          const SizedBox(height: 12),
-
-          // Inventory / Starting Tile Pool (when tile is not on board)
-          if (_phase == WarmUpPhase.playing && _tileAt == null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8.0),
-              child: Draggable<String>(
-                data: 'tile',
-                onDragStarted: _onTilePickedUp,
-                feedback: Material(
-                  color: Colors.transparent,
-                  child: _buildTileUI(isDragging: true),
-                ),
-                childWhenDragging: Opacity(
-                  opacity: 0.3,
-                  child: _buildTileUI(),
-                ),
-                child: _buildTileUI(),
-              ),
-            ),
-
-          // Bottom Action
+          const SizedBox(height: 8),
+          if (_phase == WarmUpPhase.playing) _buildBank(),
+          const SizedBox(height: 8),
           SizedBox(
             height: 52,
             child: _phase == WarmUpPhase.idle
@@ -269,7 +342,8 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
                   )
                 : Center(
                     child: Text(
-                      'Target ${_move + 1} of ${_path.length}',
+                      'Task ${_taskIndex + 1} of ${_tasks.length}'
+                      '${_held != null ? '   •   Holding Tile $_held' : ''}',
                       style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -277,13 +351,12 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
                     ),
                   ),
           ),
-          const SizedBox(height: 4),
         ],
       ),
     );
   }
 
-  Widget _buildBoard() {
+  Widget _buildBoard(double side) {
     return Column(
       children: List.generate(
         3,
@@ -294,7 +367,7 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
               (c) => Expanded(
                 child: Padding(
                   padding: const EdgeInsets.all(6),
-                  child: _buildCell(r * 3 + c),
+                  child: _buildCell(r * 3 + c, side / 3),
                 ),
               ),
             ),
@@ -304,104 +377,132 @@ class _WarmUpScreenState extends State<WarmUpScreen> {
     );
   }
 
-  Widget _buildCell(int index) {
-    final bool isTargetMole =
-        _phase == WarmUpPhase.playing && _path[_move] == index;
-    final bool hasTile = _tileAt == index;
+  Widget _buildCell(int index, double cellSide) {
+    final playing = _phase == WarmUpPhase.playing;
+    final bool isMole = playing && _task.to == index;
+    final bool isSource =
+        playing && _held == null && _expectedSource == index;
+    final tile = _board[index];
 
-    return DragTarget<String>(
-      onAcceptWithDetails: (details) {
-        _handleTileDrop(index);
-      },
-      builder: (context, candidateData, rejectedData) {
-        return Container(
-          decoration: BoxDecoration(
-            color: isTargetMole
-                ? const Color(0xFFFFEBEE) // Light red highlight for active mole
-                : Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: isTargetMole ? Colors.redAccent : const Color(0xFFE0E0E0),
-              width: isTargetMole ? 3.5 : 1.5,
+    Color bg = Colors.white;
+    Color border = const Color(0xFFE0E0E0);
+    double bw = 1.5;
+    if (isSource) {
+      bg = const Color(0xFFE3F0FF);
+      border = kBlue;
+      bw = 3;
+    }
+    if (isMole) {
+      bg = const Color(0xFFFFEBEE);
+      border = Colors.redAccent;
+      bw = 3.5;
+    }
+
+    return GestureDetector(
+      onTap: () => _tapCell(index),
+      child: Container(
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: border, width: bw),
+          boxShadow: isMole
+              ? [
+                  BoxShadow(
+                    color: Colors.redAccent.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                    spreadRadius: 1,
+                  )
+                ]
+              : [],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Positioned(
+              bottom: 4,
+              right: 8,
+              child: Text(cellLabel(index),
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade500,
+                      fontWeight: FontWeight.w500)),
             ),
-            boxShadow: isTargetMole
-                ? [
-                    BoxShadow(
-                      color: Colors.redAccent.withValues(alpha: 0.3),
-                      blurRadius: 8,
-                      spreadRadius: 1,
-                    )
-                  ]
-                : [],
-          ),
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // Cell Coordinate Label
-              Positioned(
-                bottom: 6,
-                right: 8,
-                child: Text(cellLabel(index),
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey.shade500,
-                        fontWeight: FontWeight.w500)),
+            if (isMole && tile == null)
+              Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.stars_rounded, size: 34, color: Colors.redAccent),
+                  Text('HIT!',
+                      style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.redAccent)),
+                ],
               ),
-
-              // Mole Indicator (Pop-Up Target)
-              if (isTargetMole && !hasTile)
-                Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Icon(Icons.stars_rounded, size: 36, color: Colors.redAccent),
-                    SizedBox(height: 2),
-                    Text('HIT!',
-                        style: TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.redAccent)),
-                  ],
-                ),
-
-              // Draggable Tile inside cell
-              if (hasTile)
-                Draggable<String>(
-                  data: 'tile',
-                  onDragStarted: _onTilePickedUp,
-                  feedback: Material(
-                    color: Colors.transparent,
-                    child: _buildTileUI(isDragging: true),
-                  ),
-                  childWhenDragging: Opacity(
-                    opacity: 0.3,
-                    child: _buildTileUI(),
-                  ),
-                  child: _buildTileUI(),
-                ),
-            ],
-          ),
-        );
-      },
+            if (tile != null) _tileUi(tile, cellSide * 0.55),
+          ],
+        ),
+      ),
     );
   }
 
-  Widget _buildTileUI({bool isDragging = false}) {
+  Widget _tileUi(String id, double size, {bool glow = false}) {
     return Container(
-      width: isDragging ? 70 : 64,
-      height: isDragging ? 70 : 64,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         color: kTeal,
         borderRadius: BorderRadius.circular(14),
+        border: glow ? Border.all(color: kBlue, width: 3) : null,
         boxShadow: const [
-          BoxShadow(
-              color: Colors.black26, blurRadius: 6, offset: Offset(0, 3))
+          BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 3))
         ],
       ),
       alignment: Alignment.center,
-      child: const Text(
-        'Tile',
+      child: Text(
+        id,
         style: TextStyle(
-            fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+            fontSize: size * 0.45,
+            fontWeight: FontWeight.bold,
+            color: Colors.white),
+      ),
+    );
+  }
+
+  Widget _buildBank() {
+    final onBoard = _board.values.toSet();
+    final inBank = ['A', 'B']
+        .where((t) => !onBoard.contains(t) && t != _held)
+        .toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE4F2F3),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Text('Tile Bank',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(width: 16),
+          if (inBank.isEmpty)
+            const Text('(empty)', style: TextStyle(color: Colors.black54)),
+          ...inBank.map((t) {
+            final pickable = _held == null &&
+                _expectedSource == null &&
+                t == _task.tileId;
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: GestureDetector(
+                onTap: () => _tapBank(t),
+                child: _tileUi(t, 56, glow: pickable),
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
