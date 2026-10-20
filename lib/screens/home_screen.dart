@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import '../main.dart';
-import 'warmup_screen.dart';
-import 'sudoku_screen.dart';
-import 'progress_screen.dart';
+import 'light_chase_screen.dart';
 import 'interim_demo_screen.dart';
 import 'rhythm_screen.dart';
+import 'tictactoe_screen.dart';
+import 'two_hand_play.dart';
+import 'progress_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,9 +30,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final levelText = warmUpDone
-        ? "Today's level: ${currentDifficulty!.label}"
-        : "Start with your warm-up to set today's level.";
+    final statusText = warmUpDone
+        ? 'Warm-up baseline recorded. Pick a game!'
+        : 'Start with the Light Chase warm-up to record your baseline.';
 
     return Scaffold(
       appBar: AppBar(title: const Text('RehabSudoku')),
@@ -60,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const Text('Welcome to your rehabilitation session.',
                           style: TextStyle(fontSize: 17, color: kInk)),
                       const SizedBox(height: 10),
-                      Text(levelText,
+                      Text(statusText,
                           style: const TextStyle(
                               fontSize: 17,
                               fontWeight: FontWeight.w600,
@@ -69,65 +70,73 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 const SizedBox(height: 24),
-                  ActionCard(
-                  icon: Icons.grid_view_rounded,
-                  color: kTeal,
-                  title: 'Interim Demo (Row-by-Row)',
-                  description: 'Simulate the 1x3 physical printed board interaction latin square of a 3 by 3 board filled row by row.',
-                  buttonLabel: 'Start Demo',
-                  onPressed: () => _go(const InterimDemoScreen()),
-                ),
-                const SizedBox(height: 24),
                 const Text('What would you like to do today?',
                     style: TextStyle(
                         fontSize: 20, fontWeight: FontWeight.w600, color: kInk)),
                 const SizedBox(height: 16),
                 ActionCard(
-                  icon: Icons.touch_app,
+                  icon: Icons.flash_on_rounded,
                   color: kBlue,
-                  title: 'Warm-Up',
+                  title: 'Warm-Up: Light Chase',
                   description:
-                      "Move a tile around the board to get your arm ready. This sets today's Sudoku level.",
+                      'Push the tile that lights up. A full press counts as a hit. This records your baseline.',
                   buttonLabel: !warmUpDone
                       ? 'Start Warm-Up'
                       : (trainingStarted ? 'Warm-Up Done' : 'Redo Warm-Up'),
                   onPressed: (warmUpDone && trainingStarted)
                       ? null
-                      : () => _go(const WarmUpScreen()),
+                      : () => _go(const LightChaseScreen()),
                 ),
                 ActionCard(
-                  icon: Icons.grid_on,
+                  icon: Icons.grid_view_rounded,
                   color: kTeal,
-                  locked: !warmUpDone,
-                  title: 'Sudoku Training',
-                  description: 'Exercise your arm while solving Sudoku puzzles.',
-                  buttonLabel: warmUpDone ? 'Start Training' : 'Finish Warm-Up First',
-                  onPressed: warmUpDone
-                      ? () => _go(const SudokuScreen())
-                      : () => _hint('Please finish your warm-up first.'),
+                  title: 'Interim Demo (Row-by-Row)',
+                  description:
+                      'Fill a 3x3 number board by pushing the 1, 2 or 3 tile for each highlighted cell.',
+                  buttonLabel: 'Start Demo',
+                  onPressed: () => _go(const InterimDemoScreen()),
                 ),
                 ActionCard(
                   icon: Icons.music_note_rounded,
                   color: kGreen,
                   title: 'Rhythm Game',
                   description:
-                      'Tap the lanes in time with the falling notes to train timing and reaction.',
+                      'Hold the tiles as the notes arrive. Short, long and endurance holds. Choose your level.',
                   buttonLabel: 'Play Rhythm Game',
                   onPressed: () => _go(const RhythmGameScreen()),
                 ),
                 ActionCard(
-                  icon: Icons.touch_app,
+                  icon: Icons.tag_rounded,
+                  color: kTeal,
+                  title: 'Tic-Tac-Toe',
+                  description:
+                      'Beat the computer by pushing tiles on the 3x3 board with a full press.',
+                  buttonLabel: 'Play Tic-Tac-Toe',
+                  onPressed: () => _go(const TicTacToeScreen()),
+                ),
+                ActionCard(
+                  icon: Icons.back_hand_rounded,
+                  color: kBlue,
+                  title: 'Hold & Reach (Two Hands)',
+                  description:
+                      'One hand holds the anchor tile while the other reaches for the lit tile.',
+                  buttonLabel: 'Play Hold & Reach',
+                  onPressed: () => _go(const TwoHandPlayScreen()),
+                ),
+                ActionCard(
+                  icon: Icons.flash_on_rounded,
                   color: kBlue,
                   locked: !(warmUpDone && trainingStarted),
                   title: 'Cool-Down',
                   description:
-                      'Repeat the same moves to compare how your arm moves after training.',
+                      'Repeat the same Light Chase to compare how your arm moves after training.',
                   buttonLabel: (warmUpDone && trainingStarted)
                       ? 'Start Cool-Down'
-                      : 'Finish Training First',
+                      : 'Finish a Game First',
                   onPressed: (warmUpDone && trainingStarted)
-                      ? () => _go(const WarmUpScreen(coolDown: true))
-                      : () => _hint('Do some Sudoku training before your cool-down.'),
+                      ? () => _go(const LightChaseScreen(coolDown: true))
+                      : () => _hint(
+                          'Finish the warm-up and play a game before your cool-down.'),
                 ),
                 ActionCard(
                   icon: Icons.bar_chart_rounded,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../main.dart';
+import 'push_input.dart';
 import 'training_session.dart';
 import 'training_history_service.dart';
 
@@ -17,11 +18,11 @@ class _ProgressScreenState extends State<ProgressScreen> {
   static const Map<String, String> _filters = {
     'All': 'All',
     'Warm-Up': 'Warm-Up',
-    'Sudoku Training': 'Sudoku',
-    'Cool-Down': 'Cool-Down',
-    'Rhythm Game': 'Rhythm',
     'Interim Demo': 'Demo',
-    'Reach Quest': 'Reach Quest',
+    'Rhythm Game': 'Rhythm',
+    'Tic-Tac-Toe': 'Tic-Tac-Toe',
+    'Hold & Reach': 'Hold & Reach',
+    'Cool-Down': 'Cool-Down',
   };
 
   String _fmtDuration(int seconds) {
@@ -67,8 +68,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
       body: AnimatedBuilder(
         animation: history,
         builder: (context, child) {
-          final allSessions = history.sessions;
-          final sessions = allSessions
+          final sessions = history.sessions
               .where((s) => filter == 'All' || s.activity == filter)
               .toList();
 
@@ -79,6 +79,9 @@ class _ProgressScreenState extends State<ProgressScreen> {
                   scored.length;
           final totalSeconds =
               sessions.fold<int>(0, (sum, s) => sum + s.durationSeconds);
+          final full = sessions.fold<int>(0, (a, s) => a + s.fullPresses);
+          final half = sessions.fold<int>(0, (a, s) => a + s.halfPresses);
+          final none = sessions.fold<int>(0, (a, s) => a + s.noPresses);
 
           return Center(
             child: ConstrainedBox(
@@ -91,7 +94,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
                           TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
                   const Text(
-                    'Warm-ups, Sudoku, cool-downs, the Rhythm Game and demos.',
+                    'Warm-ups, games, cool-downs and demos, with full, half and no-press counts.',
                     style: TextStyle(color: Colors.black54),
                   ),
                   const SizedBox(height: 16),
@@ -99,7 +102,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
                     children: [
                       Expanded(
                           child: _metricCard('Sessions', '${sessions.length}',
-                              Icons.history)),
+                              Icons.history, kTeal)),
                       const SizedBox(width: 10),
                       Expanded(
                           child: _metricCard(
@@ -107,11 +110,29 @@ class _ProgressScreenState extends State<ProgressScreen> {
                               averageAccuracy == null
                                   ? '—'
                                   : '${averageAccuracy.toStringAsFixed(1)}%',
-                              Icons.track_changes)),
+                              Icons.track_changes,
+                              kTeal)),
                       const SizedBox(width: 10),
                       Expanded(
                           child: _metricCard('Total time',
-                              _fmtDuration(totalSeconds), Icons.timer_outlined)),
+                              _fmtDuration(totalSeconds), Icons.timer_outlined,
+                              kTeal)),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                          child: _metricCard('Full presses', '$full',
+                              Icons.check_circle_outline, kFullColor)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                          child: _metricCard('Half presses', '$half',
+                              Icons.adjust, kHalfColor)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                          child: _metricCard('No press', '$none',
+                              Icons.remove_circle_outline, kNoneColor)),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -164,7 +185,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
     );
   }
 
-  Widget _metricCard(String title, String value, IconData icon) {
+  Widget _metricCard(String title, String value, IconData icon, Color color) {
     return Card(
       color: Colors.white,
       child: Padding(
@@ -172,7 +193,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(icon, color: kTeal, size: 26),
+            Icon(icon, color: color, size: 26),
             const SizedBox(height: 10),
             Text(title, style: const TextStyle(fontSize: 12)),
             const SizedBox(height: 4),
@@ -190,29 +211,29 @@ class _ProgressScreenState extends State<ProgressScreen> {
 
   IconData _iconFor(String activity) {
     switch (activity) {
-      case 'Sudoku Training':
-        return Icons.grid_3x3;
       case 'Interim Demo':
         return Icons.view_module;
       case 'Rhythm Game':
         return Icons.music_note_rounded;
-      case 'Cool-Down':
-      case 'Warm-Up':
+      case 'Tic-Tac-Toe':
+        return Icons.tag_rounded;
+      case 'Hold & Reach':
+        return Icons.back_hand_rounded;
       default:
-        return Icons.touch_app;
+        return Icons.flash_on_rounded;
     }
   }
 
   Color _colorFor(String activity) {
     switch (activity) {
-      case 'Sudoku Training':
-        return kTeal;
       case 'Cool-Down':
         return kGreen;
       case 'Rhythm Game':
         return Colors.deepPurple;
       case 'Interim Demo':
         return Colors.orange;
+      case 'Tic-Tac-Toe':
+        return kTeal;
       default:
         return kBlue;
     }
@@ -227,6 +248,12 @@ class _ProgressScreenState extends State<ProgressScreen> {
         '${d.minute.toString().padLeft(2, '0')}';
     final color = _colorFor(session.activity);
 
+    final line1 = '$dateText  •  ${_fmtDuration(session.durationSeconds)}'
+        '${session.hasAccuracy ? '  •  ${session.accuracy.toStringAsFixed(0)}%' : ''}';
+    final line2 = session.hasPresses
+        ? 'Full ${session.fullPresses}  •  Half ${session.halfPresses}  •  No press ${session.noPresses}'
+        : null;
+
     return Card(
       color: Colors.white,
       margin: const EdgeInsets.only(bottom: 12),
@@ -234,16 +261,20 @@ class _ProgressScreenState extends State<ProgressScreen> {
         leading: Icon(_iconFor(session.activity), color: color),
         title: Text(session.activity,
             style: const TextStyle(fontWeight: FontWeight.bold)),
-        subtitle: Text(
-            '$dateText  •  ${_fmtDuration(session.durationSeconds)}'
-            '${session.hasAccuracy ? '  •  ${session.accuracy.toStringAsFixed(0)}%' : ''}'),
+        subtitle: Text(line2 == null ? line1 : '$line1\n$line2'),
         childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         children: [
-          _detailRow('Difficulty / level', session.difficulty),
+          _detailRow('Level / board', session.difficulty),
           _detailRow('Duration', '${session.durationSeconds} seconds'),
+          if (session.hasPresses) ...[
+            _detailRow('Full presses', '${session.fullPresses}'),
+            _detailRow('Half presses', '${session.halfPresses}'),
+            _detailRow('No presses (too short)', '${session.noPresses}'),
+            _detailRow('Total presses', '${session.totalPresses}'),
+          ],
           if (session.hasAccuracy) ...[
-            _detailRow('Correct attempts', '${session.correctAttempts}'),
-            _detailRow('Incorrect attempts', '${session.incorrectAttempts}'),
+            _detailRow('Successful', '${session.correctAttempts}'),
+            _detailRow('Unsuccessful', '${session.incorrectAttempts}'),
             _detailRow('Accuracy', '${session.accuracy.toStringAsFixed(1)}%'),
           ],
           if (session.notes.isNotEmpty) _detailRow('Notes', session.notes),

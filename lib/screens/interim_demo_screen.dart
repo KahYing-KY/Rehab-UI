@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../main.dart';
+import 'push_input.dart';
 import 'training_session.dart';
 import 'training_history_service.dart';
 
@@ -12,26 +14,61 @@ class InterimDemoScreen extends StatefulWidget {
 }
 
 class _InterimDemoScreenState extends State<InterimDemoScreen> {
-  final Random _random = Random();
-  final Stopwatch _sw = Stopwatch();
+  final PushController input = PushController();
+  final Random _rng = Random();
+  final Stopwatch _total = Stopwatch();
+  final Stopwatch _idle = Stopwatch();
+  final PressStats _stats = PressStats();
+  Timer? _ticker;
+  Timer? _flashTimer;
 
-  late List<int> _solution; // the single valid answer (9 cells)
-  late List<bool> _isClue; // locked by POSITION
+  late List<int> _solution;
+  late List<bool> _isClue;
   late List<int?> _board;
+  List<int> _empties = [];
+  final Set<int> _failedCells = {};
 
-  int _activeRow = 0;
+  int _pos = 0;
+  int _tries = 0;
   int _mistakes = 0;
-  int _correct = 0;
-  bool _completed = false;
+  int _correctFull = 0;
+  int _timeouts = 0;
+  int? _flashDigit;
+  bool _finished = false;
+  bool _saved = false;
+  String _message = '';
 
   @override
   void initState() {
     super.initState();
+    input.allowed = BoardMode.row.cells;
+    input.onUp = _onUp;
     _newGame();
+    _ticker = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!mounted || _finished) return;
+      final idleSec = _idle.elapsedMilliseconds / 1000;
+      if (!input.anyDown && idleSec >= PushConfig.tileTimeoutSec) {
+        setState(() {
+          _timeouts++;
+          _failCell('Time out - moving on.');
+        });
+        if (_finished) _complete();
+      } else {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    _flashTimer?.cancel();
+    input.dispose();
+    super.dispose();
   }
 
   // ---------------------------------------------------------------------
-  // Puzzle generation (unique-solution guaranteed)
+  // Puzzle generation (exactly one answer, checked here)
   // ---------------------------------------------------------------------
   int _countSolutions(List<int?> start) {
     final g = List<int?>.from(start);
@@ -69,10 +106,10 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
     return count;
   }
 
-  // Assigns fields directly (no setState) so it can be used in initState.
+  // Assigns fields directly (wrap in setState when called from UI).
   void _newGame() {
-    final first = <int>[1, 2, 3]..shuffle(_random);
-    final shift = _random.nextBool() ? 1 : 2;
+    final first = <int>[1, 2, 3]..shuffle(_rng);
+    final shift = _rng.nextBool() ? 1 : 2;
     final sol = <int>[];
     for (var r = 0; r < 3; r++) {
       final s = r == 0 ? 0 : (r == 1 ? shift : 3 - shift);
@@ -81,122 +118,160 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       }
     }
 
-    final order = List<int>.generate(9, (i) => i)..shuffle(_random);
-    var k = 3;
+    final order = List<int>.generate(9, (i) => i)..shuffle(_rng);
+    var k = 4;
     late List<int?> puzzle;
     while (true) {
       puzzle = List<int?>.filled(9, null);
       for (var i = 0; i < k; i++) {
         puzzle[order[i]] = sol[order[i]];
       }
-      if (_countSolutions(puzzle) == 1) break; // checked at generation
-      k++; // add another clue until the answer is unique
+      if (_countSolutions(puzzle) == 1) break;
+      k++;
     }
 
     _solution = sol;
     _board = puzzle;
     _isClue = List<bool>.generate(9, (i) => puzzle[i] != null);
-    _activeRow = 0;
+    _empties = [
+      for (var i = 0; i < 9; i++)
+        if (puzzle[i] == null) i
+    ];
+    _failedCells.clear();
+    _pos = 0;
+    _tries = 0;
     _mistakes = 0;
-    _correct = 0;
-    _completed = false;
-    _sw
+    _correctFull = 0;
+    _timeouts = 0;
+    _flashDigit = null;
+    _finished = false;
+    _saved = false;
+    _stats.reset();
+    _message = 'Push the tile for the highlighted cell: G=1  H=2  J=3.';
+    _total
       ..reset()
       ..start();
-    _advanceDoneRows();
+    _idle
+      ..reset()
+      ..start();
+    input.clear();
   }
 
   // ---------------------------------------------------------------------
-  // Game logic (runs after each drop, never inside build)
+  // Game logic (runs on each release, never inside build)
   // ---------------------------------------------------------------------
-  bool _rowDone(int r) {
-    for (var c = 0; c < 3; c++) {
-      if (_board[r * 3 + c] != _solution[r * 3 + c]) return false;
-    }
-    return true;
-  }
+  void _onUp(int cell, double sec) {
+    if (_finished) return;
+    final digit = cell - 2; // G=1, H=2, J=3
+    final target = _empties[_pos];
+    final right = digit == _solution[target];
+    final r = classifyHold(sec);
 
-  void _advanceDoneRows() {
-    while (_activeRow < 2 && _rowDone(_activeRow)) {
-      _activeRow++;
-    }
-  }
-
-  List<int> _pool() {
-    final pool = [1, 2, 3];
-    for (var c = 0; c < 3; c++) {
-      final v = _board[_activeRow * 3 + c];
-      if (v != null) pool.remove(v);
-    }
-    return pool;
-  }
-
-  void _onDrop(int target, Map<String, dynamic> data) {
-    if (_completed) return;
-    if (target ~/ 3 != _activeRow || _isClue[target]) return;
-
-    final fromBoard = data['from'] == 'board';
-    if (fromBoard) {
-      final o = data['index'] as int;
-      if (o == target || _isClue[o] || o ~/ 3 != _activeRow) return;
-    }
-
-    final prevRow = _activeRow;
     setState(() {
-      if (fromBoard) {
-        final o = data['index'] as int;
-        final tmp = _board[target];
-        _board[target] = _board[o];
-        _board[o] = tmp;
-      } else {
-        _board[target] = data['value'] as int;
-      }
+      _stats.add(r);
 
-      // Mistake counts ONLY if the tile just dropped is wrong.
-      if (_board[target] == _solution[target]) {
-        _correct++;
+      if (r == PressResult.full) {
+        if (right) {
+          _board[target] = digit;
+          _correctFull++;
+          _advance('Correct! $digit entered.');
+        } else {
+          _wrong(digit);
+        }
+      } else if (r == PressResult.half) {
+        if (right) {
+          _idle
+            ..reset()
+            ..start();
+          _tries++;
+          if (_tries >= PushConfig.maxTries) {
+            _failCell('3 attempts without a full press - moving on.');
+          } else {
+            _message =
+                'Right number, but only a half press ($_tries/${PushConfig.maxTries}). Hold to full.';
+          }
+        } else {
+          _wrong(digit);
+        }
       } else {
-        _mistakes++;
-      }
-
-      _advanceDoneRows();
-      if (_activeRow == 2 && _rowDone(2)) {
-        _completed = true;
-        _sw.stop();
+        if (right) {
+          _tries++;
+          if (_tries >= PushConfig.maxTries) {
+            _failCell('3 attempts without a full press - moving on.');
+          } else {
+            _message =
+                'Too short ($_tries/${PushConfig.maxTries}). Hold longer.';
+          }
+        } else {
+          _message = 'Too short - nothing entered.';
+        }
       }
     });
 
-    if (_completed) {
-      _onFinished();
-    } else if (_activeRow != prevRow) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            'Row $prevRow done! Moving to Row ${_activeRow + 1}.'.replaceFirst(
-                'Row $prevRow', 'Row ${prevRow + 1}')),
-        duration: const Duration(seconds: 1),
-      ));
+    if (_finished) _complete();
+  }
+
+  // inside setState
+  void _wrong(int digit) {
+    _mistakes++;
+    _flashDigit = digit;
+    _flashTimer?.cancel();
+    _flashTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) setState(() => _flashDigit = null);
+    });
+    _idle
+      ..reset()
+      ..start();
+    _message = 'Wrong number ($digit) - mistake counted. Try again.';
+  }
+
+  // inside setState
+  void _failCell(String msg) {
+    final t = _empties[_pos];
+    _board[t] = _solution[t];
+    _failedCells.add(t);
+    _advance(msg);
+  }
+
+  // inside setState
+  void _advance(String msg) {
+    _pos++;
+    _tries = 0;
+    _flashDigit = null;
+    _idle
+      ..reset()
+      ..start();
+    if (_pos >= _empties.length) {
+      _finished = true;
+      _total.stop();
+      _idle.stop();
+      _message = 'Board complete!';
+    } else {
+      _message = msg;
     }
   }
 
-  void _removeFromBoard(Map<String, dynamic> data) {
-    if (data['from'] != 'board' || _completed) return;
-    final o = data['index'] as int;
-    if (_isClue[o] || o ~/ 3 != _activeRow) return;
-    setState(() => _board[o] = null);
-  }
+  void _complete({bool early = false}) {
+    if (_saved) return;
+    _saved = true;
+    input.clear();
+    _total.stop();
+    final secs = _total.elapsedMilliseconds / 1000;
 
-  void _onFinished() {
-    final secs = _sw.elapsedMilliseconds / 1000;
     TrainingHistoryService.instance.addSession(TrainingSession(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       activity: 'Interim Demo',
       date: DateTime.now(),
-      difficulty: 'Standard',
+      difficulty: '1 x 3 push tiles',
       durationSeconds: secs.round(),
-      correctAttempts: _correct,
-      incorrectAttempts: _mistakes,
-      completed: true,
-      notes: 'Row-by-row 3x3 board | $_mistakes mistake(s)',
+      correctAttempts: _correctFull,
+      incorrectAttempts: _mistakes + _failedCells.length,
+      fullPresses: _stats.full,
+      halfPresses: _stats.half,
+      noPresses: _stats.none,
+      completed: !early,
+      notes: 'Row-by-row 3x3 | mistakes $_mistakes | failed cells '
+          '${_failedCells.length} | timeouts $_timeouts',
     ));
 
     if (!mounted) return;
@@ -204,16 +279,17 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        title: const Text('Demo Completed!'),
-        content: Text(
-            'You completed the board in ${fmtSeconds(secs)} with $_mistakes mistake(s).'),
+        title: Text(early ? 'Session ended' : 'Demo Completed!'),
+        content: Text('Time ${fmtSeconds(secs)}\n'
+            'Mistakes: $_mistakes   Failed cells: ${_failedCells.length}\n'
+            'Full ${_stats.full} • Half ${_stats.half} • No press ${_stats.none}'),
         actions: [
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
               setState(_newGame);
             },
-            child: const Text('Restart Demo'),
+            child: const Text('New Puzzle'),
           ),
           TextButton(
             onPressed: () {
@@ -230,82 +306,95 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
   // ---------------------------------------------------------------------
   // UI
   // ---------------------------------------------------------------------
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(_completed
-            ? 'Demo Finished!'
-            : 'Interim Demo: Row ${_activeRow + 1} of 3'),
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: LayoutBuilder(builder: (context, c) {
-            final wide = c.maxWidth >= 720 && c.maxWidth > c.maxHeight * 1.1;
-            if (wide) {
-              return Row(
-                children: [
-                  Expanded(child: _boardArea()),
-                  const SizedBox(width: 16),
-                  SizedBox(
-                    width: 300,
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        _banner(),
-                        const SizedBox(height: 16),
-                        _inventory(),
-                        const SizedBox(height: 16),
-                        _buttons(),
-                      ],
-                    ),
-                  ),
-                ],
-              );
-            }
-            return Column(
-              children: [
-                _banner(),
-                const SizedBox(height: 8),
-                Expanded(child: _boardArea()),
-                const SizedBox(height: 8),
-                _inventory(),
-                const SizedBox(height: 8),
-                _buttons(),
-              ],
-            );
-          }),
-        ),
-      ),
+  TileStyle _padStyle(int cell) {
+    final digit = cell - 2;
+    return TileStyle(
+      bg: const Color(0xFFE1F2F3),
+      border: kTeal,
+      borderWidth: 3,
+      label: '$digit',
+      labelColor: kTeal,
     );
   }
 
-  Widget _banner() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFDFF1F1),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            _completed
-                ? 'All rows completed!'
-                : 'Active row: ${_activeRow + 1}   •   Mistakes: $_mistakes',
-            style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: kTeal),
+  @override
+  Widget build(BuildContext context) {
+    final cellNo = min(_pos + 1, _empties.length);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Interim Demo')),
+      body: SafeArea(
+        child: PushKeyboard(
+          controller: input,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFDFF1F1),
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Cell $cellNo of ${_empties.length}  •  '
+                            'Mistakes $_mistakes  •  Try ${_tries + 1}/${PushConfig.maxTries}',
+                            style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: kTeal),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(_message,
+                              style:
+                                  const TextStyle(fontSize: 14, color: kInk)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Expanded(child: _boardArea()),
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      height: 110,
+                      child: PushBoard(
+                          mode: BoardMode.row,
+                          input: input,
+                          styleOf: _padStyle),
+                    ),
+                    const SizedBox(height: 8),
+                    pressStatsBar(_stats),
+                    const SizedBox(height: 8),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        OutlinedButton(
+                          onPressed: _finished
+                              ? null
+                              : () {
+                                  setState(() => _finished = true);
+                                  _complete(early: true);
+                                },
+                          child: const Text('End session'),
+                        ),
+                        const SizedBox(width: 12),
+                        TextButton(
+                          onPressed: () => setState(_newGame),
+                          child: const Text('New puzzle'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Fill each row so no number repeats in any row or column. '
-            'Green = correct, red = wrong.',
-            style: TextStyle(fontSize: 13, color: kInk),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -317,225 +406,86 @@ class _InterimDemoScreenState extends State<InterimDemoScreen> {
         child: Container(
           width: side,
           height: side,
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: kTeal.withValues(alpha: 0.3), width: 2),
           ),
           child: Column(
-            children: List.generate(
-              3,
-              (r) => Expanded(
-                child: Row(
-                  children: List.generate(
-                    3,
-                    (col) => Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.all(4),
-                        child: _cell(r * 3 + col, side / 3),
-                      ),
-                    ),
+            children: [
+              for (var r = 0; r < 3; r++)
+                Expanded(
+                  child: Row(
+                    children: [
+                      for (var col = 0; col < 3; col++)
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(4),
+                            child: _cell(r * 3 + col, side / 3),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-              ),
-            ),
+            ],
           ),
         ),
       );
     });
   }
 
-  Widget _cell(int idx, double size) {
-    final row = idx ~/ 3;
-    final value = _board[idx];
-    final clue = _isClue[idx];
-    final active = row == _activeRow && !_completed;
-    final done = row < _activeRow || _completed;
-    final canEdit = active && !clue;
-    final fontSize = size * 0.42;
+  Widget _cell(int i, double size) {
+    final active =
+        !_finished && _pos < _empties.length && _empties[_pos] == i;
+    final v = _board[i];
 
-    return DragTarget<Map<String, dynamic>>(
-      onWillAcceptWithDetails: (_) => canEdit,
-      onAcceptWithDetails: (d) => _onDrop(idx, d.data),
-      builder: (context, candidate, rejected) {
-        Color bg;
-        Color border;
-        Color text;
-        double bw = 1.5;
+    Color bg = Colors.white;
+    Color border = Colors.grey.shade300;
+    Color text = kInk;
+    double bw = 1.5;
+    String t = v?.toString() ?? '';
 
-        if (clue) {
-          bg = const Color(0xFFE1F2F3);
-          border = kTeal;
-          text = kTeal;
-        } else if (done) {
-          bg = Colors.green.shade50;
-          border = Colors.green.shade300;
-          text = Colors.green.shade700;
-        } else if (!active) {
-          bg = const Color(0xFFF8FAFC);
-          border = Colors.grey.shade300;
-          text = Colors.grey;
-        } else if (value == null) {
-          bg = candidate.isNotEmpty
-              ? kTeal.withValues(alpha: 0.2)
-              : Colors.white;
-          border = kTeal;
-          bw = 3;
-          text = kTeal;
-        } else if (value == _solution[idx]) {
-          bg = Colors.green.shade50;
-          border = Colors.green;
-          bw = 3;
-          text = Colors.green.shade700;
-        } else {
-          bg = Colors.red.shade50;
-          border = Colors.red;
-          bw = 3;
-          text = Colors.red;
-        }
+    if (_isClue[i]) {
+      bg = const Color(0xFFE1F2F3);
+      border = kTeal;
+      text = kTeal;
+    } else if (_failedCells.contains(i)) {
+      bg = Colors.amber.shade50;
+      border = Colors.amber.shade700;
+      text = Colors.amber.shade800;
+    } else if (v != null) {
+      bg = Colors.green.shade50;
+      border = Colors.green;
+      text = Colors.green.shade700;
+    }
 
-        final box = Container(
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: border, width: bw),
-          ),
-          alignment: Alignment.center,
-          child: value != null
-              ? Text('$value',
-                  style: TextStyle(
-                      fontSize: fontSize,
-                      fontWeight: FontWeight.bold,
-                      color: text))
-              : (active
-                  ? Text('Drop',
-                      style: TextStyle(
-                          color: Colors.grey, fontSize: fontSize * 0.4))
-                  : null),
-        );
+    if (active) {
+      bg = const Color(0xFFFFF8E1);
+      border = Colors.amber.shade700;
+      bw = 4;
+      text = Colors.amber.shade800;
+      t = '?';
+      if (_flashDigit != null) {
+        bg = Colors.red.shade50;
+        border = Colors.red;
+        text = Colors.red;
+        t = '$_flashDigit';
+      }
+    }
 
-        if (canEdit && value != null) {
-          return Draggable<Map<String, dynamic>>(
-            data: {'from': 'board', 'index': idx, 'value': value},
-            feedback: Material(
-              color: Colors.transparent,
-              child: Container(
-                width: size * 0.6,
-                height: size * 0.6,
-                decoration: BoxDecoration(
-                    color: kTeal, borderRadius: BorderRadius.circular(12)),
-                alignment: Alignment.center,
-                child: Text('$value',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: fontSize,
-                        fontWeight: FontWeight.bold)),
-              ),
-            ),
-            childWhenDragging: Opacity(opacity: 0.3, child: box),
-            child: box,
-          );
-        }
-        return box;
-      },
-    );
-  }
-
-  Widget _inventory() {
-    final pool = _pool();
-    return DragTarget<Map<String, dynamic>>(
-      onWillAcceptWithDetails: (d) => d.data['from'] == 'board',
-      onAcceptWithDetails: (d) => _removeFromBoard(d.data),
-      builder: (context, candidate, rejected) {
-        return Container(
-          width: double.infinity,
-          constraints: const BoxConstraints(minHeight: 84),
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: candidate.isNotEmpty
-                ? Colors.red.withValues(alpha: 0.08)
-                : Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-                color: candidate.isNotEmpty ? Colors.red : Colors.grey.shade300,
-                width: 2),
-          ),
-          alignment: Alignment.center,
-          child: _completed
-              ? const Text('All rows solved!',
-                  style: TextStyle(
-                      color: Colors.green,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16))
-              : pool.isEmpty
-                  ? const Text(
-                      'Row full. Swap the red tiles (or drag one here) to fix it.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                          color: Colors.black54, fontWeight: FontWeight.w600))
-                  : Wrap(
-                      spacing: 14,
-                      children: pool.map((n) {
-                        return Draggable<Map<String, dynamic>>(
-                          data: {'from': 'pool', 'value': n},
-                          feedback: Material(
-                            color: Colors.transparent,
-                            child: _poolTile(n, 72, filled: true),
-                          ),
-                          childWhenDragging:
-                              Opacity(opacity: 0.3, child: _poolTile(n, 64)),
-                          child: _poolTile(n, 64),
-                        );
-                      }).toList(),
-                    ),
-        );
-      },
-    );
-  }
-
-  Widget _poolTile(int n, double size, {bool filled = false}) {
     return Container(
-      width: size,
-      height: size,
       decoration: BoxDecoration(
-        color: filled ? kTeal : const Color(0xFFE1F2F3),
+        color: bg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: kTeal, width: 2),
+        border: Border.all(color: border, width: bw),
       ),
       alignment: Alignment.center,
-      child: Text('$n',
+      child: Text(t,
           style: TextStyle(
-              color: filled ? Colors.white : kTeal,
-              fontSize: size * 0.45,
-              fontWeight: FontWeight.bold)),
-    );
-  }
-
-  Widget _buttons() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        ElevatedButton.icon(
-          onPressed: () => setState(_newGame),
-          icon: const Icon(Icons.refresh, color: Colors.white, size: 18),
-          label: const Text('New Puzzle',
-              style:
-                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: kTeal,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          ),
-        ),
-        const SizedBox(width: 12),
-        OutlinedButton(
-          onPressed: () => Navigator.pop(context),
-          style: OutlinedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          ),
-          child: const Text('Back to Home'),
-        ),
-      ],
+              fontSize: size * 0.42,
+              fontWeight: FontWeight.bold,
+              color: text)),
     );
   }
 }

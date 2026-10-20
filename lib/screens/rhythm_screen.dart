@@ -2,16 +2,28 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import '../main.dart';
+import 'push_input.dart';
 import 'training_session.dart';
 import 'training_history_service.dart';
 
 class _Note {
-  final int lane;
-  double top = -0.3;
-  _Note(this.lane);
+  final int lane; // index into mode.cells
+  double start; // time (s) the note must be pressed
+  final double duration;
+  final String kind; // half | full | endurance
+  int state = 0; // 0 pending, 1 holding, 2 completed, 3 missed, 4 dropped
+  double pressAt = 0;
+  int timingPts = 0;
+  _Note(this.lane, this.start, this.duration, this.kind);
 }
 
-enum _RPhase { idle, playing, over }
+enum _RPhase { setup, playing, done }
+
+const Map<String, Color> _kindColors = {
+  'half': Color(0xFF00E5FF),
+  'full': Color(0xFFFF4081),
+  'endurance': Color(0xFFFFD740),
+};
 
 class RhythmGameScreen extends StatefulWidget {
   const RhythmGameScreen({super.key});
@@ -22,167 +34,238 @@ class RhythmGameScreen extends StatefulWidget {
 
 class _RhythmGameScreenState extends State<RhythmGameScreen>
     with SingleTickerProviderStateMixin {
-  static const int _maxTiles = 30;
-  static const double _perfectPos = 0.85;
-  static const double _noteH = 28;
+  static const double _window = 0.45; // seconds either side of note start
 
   late final Ticker _ticker;
-  Duration _lastTick = Duration.zero;
+  final PushController input = PushController();
   final Random _random = Random();
-  final Stopwatch _sw = Stopwatch();
-
   final List<_Note> _notes = [];
-  _RPhase _phase = _RPhase.idle;
+  final PressStats _stats = PressStats();
 
-  double _speed = 0.45;
-  double _spawnEvery = 1.5;
-  double _spawnTimer = 0;
+  _RPhase _phase = _RPhase.setup;
+  BoardMode _mode = BoardMode.row;
+  Difficulty _difficulty = Difficulty.easy;
+  double _t = 0;
 
-  int _score = 0, _combo = 0, _spawned = 0, _hit = 0;
-  int _perfect = 0, _early = 0, _late = 0, _missed = 0;
+  int _score = 0, _combo = 0, _bestCombo = 0;
+  int _completed = 0, _missed = 0, _dropped = 0, _perfect = 0, _good = 0;
+  double _longest = 0;
+  bool _early = false;
   String _judgment = '';
-  Color _judgmentColor = Colors.grey;
-  final List<bool> _pressed = [false, false, false];
+  Color _judgmentColor = Colors.white;
 
-  Difficulty get _level => currentDifficulty ?? Difficulty.medium;
+  double get _lead => switch (_difficulty) {
+        Difficulty.easy => 3.6,
+        Difficulty.medium => 3.0,
+        Difficulty.hard => 2.6,
+      };
+
+  double get _gap => switch (_difficulty) {
+        Difficulty.easy => 1.6,
+        Difficulty.medium => 1.3,
+        Difficulty.hard => 1.1,
+      };
+
+  double get _enduranceSec => switch (_difficulty) {
+        Difficulty.easy => 8.0,
+        Difficulty.medium => 12.0,
+        Difficulty.hard => 15.0,
+      };
+
+  List<String> get _pattern => switch (_difficulty) {
+        Difficulty.easy => [
+            'half', 'half', 'full', 'half', 'full', 'half', 'endurance', 'half'
+          ],
+        Difficulty.medium => [
+            'half', 'full', 'half', 'full', 'full', 'endurance', 'half',
+            'full', 'half', 'endurance'
+          ],
+        Difficulty.hard => [
+            'full', 'half', 'full', 'full', 'endurance', 'full', 'half',
+            'full', 'endurance', 'full', 'full', 'half'
+          ],
+      };
 
   @override
   void initState() {
     super.initState();
-    _ticker = createTicker(_onTick)..start();
+    input.allowed = _mode.cells;
+    input.onDown = _onDown;
+    input.onUp = _onUp;
+    _ticker = createTicker(_onTick);
   }
 
   @override
   void dispose() {
     _ticker.dispose();
+    input.dispose();
     super.dispose();
   }
 
-  void _startGame() {
-    switch (_level) {
-      case Difficulty.easy:
-        _speed = 0.35;
-        _spawnEvery = 1.8;
-        break;
-      case Difficulty.medium:
-        _speed = 0.45;
-        _spawnEvery = 1.5;
-        break;
-      case Difficulty.hard:
-        _speed = 0.60;
-        _spawnEvery = 1.2;
-        break;
+  // ---------------------------------------------------------------------
+  // Chart + start
+  // ---------------------------------------------------------------------
+  void _buildChart() {
+    _notes.clear();
+    double t = _lead + 1.0;
+    int prev = -1;
+    final lanes = _mode.cells.length;
+    for (final k in _pattern) {
+      int lane;
+      do {
+        lane = _random.nextInt(lanes);
+      } while (lane == prev && lanes > 1);
+      prev = lane;
+      final d = switch (k) {
+        'half' => PushConfig.halfSec,
+        'full' => PushConfig.fullSec,
+        _ => _enduranceSec * PushConfig.scale,
+      };
+      _notes.add(_Note(lane, t, d, k));
+      t += d + _gap;
     }
-    setState(() {
-      _notes.clear();
-      _spawnTimer = _spawnEvery; // first note spawns immediately
-      _score = 0;
-      _combo = 0;
-      _spawned = 0;
-      _hit = 0;
-      _perfect = 0;
-      _early = 0;
-      _late = 0;
-      _missed = 0;
-      _judgment = '';
-      _judgmentColor = Colors.grey;
-      _phase = _RPhase.playing;
-      _sw
-        ..reset()
-        ..start();
-    });
   }
 
-  void _onTick(Duration elapsed) {
-    final dt = ((elapsed - _lastTick).inMicroseconds / 1e6).clamp(0.0, 0.05);
-    _lastTick = elapsed;
+  void _startGame() {
+    trainingStarted = true;
+    input.allowed = _mode.cells;
+    input.clear();
+    setState(() {
+      _buildChart();
+      _stats.reset();
+      _score = 0;
+      _combo = 0;
+      _bestCombo = 0;
+      _completed = 0;
+      _missed = 0;
+      _dropped = 0;
+      _perfect = 0;
+      _good = 0;
+      _longest = 0;
+      _early = false;
+      _judgment = '';
+      _t = 0;
+      _phase = _RPhase.playing;
+    });
+    if (_ticker.isActive) _ticker.stop();
+    _ticker.start();
+  }
+
+  void _flash(String text, Color c) {
+    _judgment = text;
+    _judgmentColor = c;
+  }
+
+  // ---------------------------------------------------------------------
+  // Game loop
+  // ---------------------------------------------------------------------
+  void _onTick(Duration e) {
+    _t = e.inMicroseconds / 1e6;
     if (_phase != _RPhase.playing) return;
 
     setState(() {
-      _spawnTimer += dt;
-      if (_spawnTimer >= _spawnEvery && _spawned < _maxTiles) {
-        _spawnTimer = 0;
-        _spawned++;
-        _notes.add(_Note(_random.nextInt(3)));
-      }
-
       for (final n in _notes) {
-        n.top += dt * _speed;
-      }
-
-      for (var i = _notes.length - 1; i >= 0; i--) {
-        if (_notes[i].top > 0.95) {
-          _combo = 0;
+        if (n.state == 0 && _t > n.start + _window) {
+          n.state = 3;
           _missed++;
-          _judgment = 'MISS';
-          _judgmentColor = Colors.red;
-          _notes.removeAt(i);
+          _combo = 0;
+          _flash('MISS', Colors.redAccent);
+        } else if (n.state == 1 && _t >= n.start + n.duration) {
+          n.state = 2;
+          _stats.add(classifyHold(n.duration));
+          _completed++;
+          _combo++;
+          _bestCombo = max(_bestCombo, _combo);
+          _longest = max(_longest, n.duration);
+          final mult = 1 + min(_combo, 10) * 0.1;
+          _score += ((n.timingPts + n.duration * 20) * mult).round();
+          _flash('HOLD COMPLETE', Colors.greenAccent);
         }
       }
-
-      if (_spawned >= _maxTiles && _notes.isEmpty) {
-        _phase = _RPhase.over;
-        _sw.stop();
-        _saveSession();
-      }
+      if (_notes.every((n) => n.state >= 2)) _finish();
     });
   }
 
-  void _saveSession() {
+  void _onDown(int cell) {
+    if (_phase != _RPhase.playing) return;
+    final lane = _mode.cells.indexOf(cell);
+    _Note? best;
+    double bd = 99;
+    for (final n in _notes) {
+      if (n.lane == lane && n.state == 0) {
+        final d = (_t - n.start).abs();
+        if (d <= _window && d < bd) {
+          best = n;
+          bd = d;
+        }
+      }
+    }
+    if (best == null) return;
+    final note = best;
+    setState(() {
+      if (bd <= 0.2) {
+        note.timingPts = 100;
+        _perfect++;
+        _flash('PERFECT', Colors.greenAccent);
+      } else {
+        note.timingPts = 50;
+        _good++;
+        _flash('GOOD', Colors.lightBlueAccent);
+      }
+      note.state = 1;
+      note.pressAt = _t;
+      note.start = _t; // snap so hold length is measured from the press
+    });
+  }
+
+  void _onUp(int cell, double sec) {
+    if (_phase != _RPhase.playing) return;
+    final lane = _mode.cells.indexOf(cell);
+    for (final n in _notes) {
+      if (n.lane == lane && n.state == 1) {
+        setState(() {
+          final held = _t - n.pressAt;
+          n.state = 4;
+          final r = classifyHold(held);
+          _stats.add(r);
+          _dropped++;
+          _combo = 0;
+          _longest = max(_longest, held);
+          _score += (held * 10).round();
+          _flash(
+              r == PressResult.none
+                  ? 'TOO SHORT'
+                  : (r == PressResult.half ? 'RELEASED (HALF)' : 'RELEASED (FULL)'),
+              Colors.orangeAccent);
+        });
+        break;
+      }
+    }
+  }
+
+  // inside setState
+  void _finish({bool early = false}) {
+    _ticker.stop();
+    input.clear();
+    _early = early;
+    _phase = _RPhase.done;
+
     TrainingHistoryService.instance.addSession(TrainingSession(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
       activity: 'Rhythm Game',
       date: DateTime.now(),
-      difficulty: _level.label,
-      durationSeconds: (_sw.elapsedMilliseconds / 1000).round(),
-      correctAttempts: _hit,
-      incorrectAttempts: _maxTiles - _hit,
-      completed: true,
-      notes:
-          'Score $_score | Perfect $_perfect, Early $_early, Late $_late, Missed $_missed',
+      difficulty: _difficulty.label,
+      durationSeconds: _t.round(),
+      correctAttempts: _completed,
+      incorrectAttempts: _notes.length - _completed,
+      fullPresses: _stats.full,
+      halfPresses: _stats.half,
+      noPresses: _stats.none,
+      completed: !early,
+      notes: 'Score $_score | ${_mode.label} | holds $_completed/${_notes.length} | '
+          'missed $_missed, released early $_dropped | perfect $_perfect, good $_good | '
+          'longest hold ${_longest.toStringAsFixed(1)} s | best combo $_bestCombo',
     ));
-  }
-
-  void _tapLane(int lane) {
-    if (_phase != _RPhase.playing) return;
-    setState(() {
-      int best = -1;
-      double bestDiff = 99;
-      for (var i = 0; i < _notes.length; i++) {
-        final n = _notes[i];
-        if (n.lane == lane && n.top >= 0.70 && n.top <= 0.95) {
-          final d = (n.top - _perfectPos).abs();
-          if (d < bestDiff) {
-            bestDiff = d;
-            best = i;
-          }
-        }
-      }
-      if (best == -1) return;
-
-      final note = _notes[best];
-      final diff = note.top - _perfectPos;
-      final mult = max(1, min(_combo, 10));
-      if (diff.abs() <= 0.03) {
-        _judgment = 'PERFECT';
-        _judgmentColor = Colors.green;
-        _score += 100 * mult;
-        _perfect++;
-      } else if (diff < 0) {
-        _judgment = 'EARLY';
-        _judgmentColor = Colors.orange;
-        _score += 50 * mult;
-        _early++;
-      } else {
-        _judgment = 'LATE';
-        _judgmentColor = Colors.blue;
-        _score += 50 * mult;
-        _late++;
-      }
-      _combo++;
-      _hit++;
-      _notes.removeAt(best);
-    });
   }
 
   // ---------------------------------------------------------------------
@@ -193,15 +276,15 @@ class _RhythmGameScreenState extends State<RhythmGameScreen>
     return Scaffold(
       appBar: AppBar(title: const Text('Rhythm Game')),
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
+        child: PushKeyboard(
+          controller: input,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 560),
               child: switch (_phase) {
-                _RPhase.idle => _intro(),
+                _RPhase.setup => _setup(),
                 _RPhase.playing => _play(),
-                _RPhase.over => _summary(),
+                _RPhase.done => _summary(),
               },
             ),
           ),
@@ -210,305 +293,302 @@ class _RhythmGameScreenState extends State<RhythmGameScreen>
     );
   }
 
-  Widget _intro() {
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.music_note_rounded, size: 80, color: kTeal),
-          const SizedBox(height: 12),
-          const Text('Rhythm Game',
-              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 10),
-          const Text(
-            '30 notes will fall down three lanes.\nTap the matching lane button when a note reaches the line.',
+  Widget _setup() {
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Icon(Icons.music_note_rounded, size: 72, color: kTeal),
+        const SizedBox(height: 8),
+        const Text('Rhythm Game',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 17),
-          ),
-          const SizedBox(height: 10),
-          Text('Speed level: ${_level.label}',
-              style: const TextStyle(
-                  fontSize: 17, fontWeight: FontWeight.w600, color: kTeal)),
-          const SizedBox(height: 24),
-          FilledButton(
-            onPressed: _startGame,
-            style: FilledButton.styleFrom(
-                backgroundColor: kTeal,
-                minimumSize: const Size(220, 56)),
-            child: const Text('Start',
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Back to Home'),
-          ),
-        ],
-      ),
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        const Text(
+          'Press and HOLD a tile when its note reaches the line, and keep holding until the note ends.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 16),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 14,
+          runSpacing: 4,
+          alignment: WrapAlignment.center,
+          children: [
+            _legendDot(_kindColors['half']!,
+                'Half hold ${PushConfig.halfSec.toStringAsFixed(1)} s'),
+            _legendDot(_kindColors['full']!,
+                'Full hold ${PushConfig.fullSec.toStringAsFixed(1)} s'),
+            _legendDot(_kindColors['endurance']!,
+                'Endurance ${(_enduranceSec * PushConfig.scale).toStringAsFixed(0)} s'),
+          ],
+        ),
+        const SizedBox(height: 16),
+        chipRow<Difficulty>(
+          title: 'Level',
+          values: Difficulty.values,
+          selected: _difficulty,
+          label: (d) => d.label,
+          onSelected: (d) => setState(() => _difficulty = d),
+        ),
+        const SizedBox(height: 12),
+        chipRow<BoardMode>(
+          title: 'Board',
+          values: BoardMode.values,
+          selected: _mode,
+          label: (m) => m.label,
+          onSelected: (m) => setState(() {
+            _mode = m;
+            input.allowed = m.cells;
+          }),
+        ),
+        const SizedBox(height: 8),
+        practiceSwitch(PushConfig.practice,
+            (v) => setState(() => PushConfig.practice = v)),
+        Text(pressRulesText(),
+            style: const TextStyle(fontSize: 13, color: Colors.black54)),
+        const SizedBox(height: 20),
+        FilledButton(
+          onPressed: _startGame,
+          style: FilledButton.styleFrom(
+              backgroundColor: kTeal, minimumSize: const Size.fromHeight(56)),
+          child: const Text('Start',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Back to Home'),
+        ),
+      ],
+    );
+  }
+
+  Widget _legendDot(Color c, String text) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+            width: 12,
+            height: 12,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(text, style: const TextStyle(fontSize: 13)),
+      ],
     );
   }
 
   Widget _play() {
-    return Column(
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text('Score: $_score',
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.bold)),
-            Text('Tile: $_spawned/$_maxTiles',
-                style: const TextStyle(
-                    fontSize: 15,
-                    color: Colors.black54,
-                    fontWeight: FontWeight.w600)),
-            Text('Combo: x$_combo',
-                style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.orange)),
-          ],
-        ),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Row(
-              children: [
-                Expanded(flex: 3, child: _track()),
-                const SizedBox(width: 10),
-                SizedBox(width: 80, child: _sidePanel()),
-              ],
+    final done = _notes.where((n) => n.state >= 2).length;
+    const white = TextStyle(
+        color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold);
+
+    return Container(
+      color: const Color(0xFF05051A),
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Score $_score', style: white),
+              Text('Note ${min(done + 1, _notes.length)}/${_notes.length}',
+                  style: white.copyWith(color: Colors.white70)),
+              Text('Combo x$_combo',
+                  style: white.copyWith(color: Colors.orangeAccent)),
+            ],
+          ),
+          SizedBox(
+            height: 38,
+            child: Center(
+              child: Text(_judgment,
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w900,
+                      color: _judgmentColor)),
             ),
           ),
-        ),
-        Row(
-          children: [
-            Expanded(
-              flex: 3,
-              child: Row(
-                children: List.generate(3, _laneButton),
-              ),
-            ),
-            const SizedBox(width: 90),
-          ],
-        ),
-        const SizedBox(height: 6),
-        const Text('Tap the lane button when a note reaches the line!',
-            style: TextStyle(fontSize: 12, color: Colors.black54)),
-      ],
-    );
-  }
-
-  Widget _track() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: LayoutBuilder(builder: (context, c) {
-          final h = c.maxHeight;
-          final laneW = c.maxWidth / 3;
-          return Stack(
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: List.generate(
-                    2, (_) => Container(width: 1, color: Colors.grey[300])),
-              ),
-              ..._notes.map((n) => Positioned(
-                    left: n.lane * laneW + 6,
-                    top: n.top * (h - _noteH),
-                    child: Container(
-                      width: laneW - 12,
-                      height: _noteH,
-                      decoration: BoxDecoration(
-                        color: kTeal,
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: const [
-                          BoxShadow(
-                              color: Colors.black26,
-                              blurRadius: 2,
-                              offset: Offset(0, 1))
-                        ],
+          Expanded(
+            child: _mode == BoardMode.row
+                ? ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: AnimatedBuilder(
+                      animation: input,
+                      builder: (context, _) => CustomPaint(
+                        size: Size.infinite,
+                        painter: _HighwayPainter(
+                          _notes,
+                          _t,
+                          _lead,
+                          {
+                            for (var l = 0; l < 3; l++)
+                              if (input.isDown(_mode.cells[l])) l
+                          },
+                        ),
                       ),
                     ),
-                  )),
-              Positioned(
-                top: _perfectPos * (h - _noteH) + _noteH / 2,
-                left: 0,
-                right: 0,
-                child: Container(
-                    height: 2, color: kTeal.withValues(alpha: 0.8)),
-              ),
-            ],
-          );
-        }),
-      ),
-    );
-  }
-
-  Widget _laneButton(int i) {
-    final pressed = _pressed[i];
-    return Expanded(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        child: GestureDetector(
-          onTapDown: (_) {
-            setState(() => _pressed[i] = true);
-            _tapLane(i);
-          },
-          onTapUp: (_) => setState(() => _pressed[i] = false),
-          onTapCancel: () => setState(() => _pressed[i] = false),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 50),
-            height: 64,
-            decoration: BoxDecoration(
-              color: pressed ? const Color(0xFF0F525A) : kTeal,
-              borderRadius: BorderRadius.circular(12),
-              border: pressed ? Border.all(color: Colors.white, width: 2) : null,
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black26,
-                    blurRadius: pressed ? 1 : 3,
-                    offset: const Offset(0, 2))
-              ],
-            ),
-            alignment: Alignment.center,
-            child: Text('L${i + 1}',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18)),
+                  )
+                : PushBoard(mode: _mode, input: input, styleOf: _gridStyle),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _sidePanel() {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Text('STATUS',
-              style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black54)),
-          const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: _judgmentColor.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: _judgmentColor, width: 1.5),
+          const SizedBox(height: 8),
+          if (_mode == BoardMode.row)
+            SizedBox(
+              height: 100,
+              child: PushBoard(
+                  mode: BoardMode.row, input: input, styleOf: _padStyle),
             ),
-            child: Text(
-              _judgment.isEmpty ? '-' : _judgment,
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: _judgment.isEmpty ? Colors.grey : _judgmentColor),
-            ),
+          const SizedBox(height: 8),
+          pressStatsBar(_stats, dark: true),
+          TextButton(
+            onPressed: () => setState(() => _finish(early: true)),
+            child: const Text('End session',
+                style: TextStyle(color: Colors.white70)),
           ),
-          const SizedBox(height: 16),
-          _legend('PERF', Colors.green, 'PERFECT'),
-          const SizedBox(height: 6),
-          _legend('EARLY', Colors.orange, 'EARLY'),
-          const SizedBox(height: 6),
-          _legend('LATE', Colors.blue, 'LATE'),
-          const SizedBox(height: 6),
-          _legend('MISS', Colors.red, 'MISS'),
         ],
       ),
     );
   }
 
-  Widget _legend(String label, Color color, String judgment) {
-    final active = _judgment == judgment;
-    return Row(
-      children: [
-        Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-        const SizedBox(width: 4),
-        Text(label,
-            style: TextStyle(
-                fontSize: 10,
-                fontWeight: active ? FontWeight.bold : FontWeight.normal,
-                color: Colors.black54)),
-      ],
+  TileStyle _padStyle(int cell) {
+    const colors = [Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFFFFD740)];
+    final lane = _mode.cells.indexOf(cell);
+    return TileStyle(
+      bg: const Color(0xFF14143A),
+      border: colors[lane % 3],
+      borderWidth: 3,
+      labelColor: Colors.white,
     );
   }
 
-  Widget _summary() {
-    final accuracy = _hit / _maxTiles * 100;
-    return Center(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+  TileStyle _gridStyle(int cell) {
+    const dark = Color(0xFF14143A);
+    _Note? up;
+    _Note? hold;
+    for (final n in _notes) {
+      if (n.lane != cell) continue;
+      if (n.state == 1) {
+        hold = n;
+      } else if (n.state == 0 &&
+          n.start - _t <= _lead &&
+          (up == null || n.start < up.start)) {
+        up = n;
+      }
+    }
+
+    if (hold != null) {
+      final held = _t - hold.pressAt;
+      return TileStyle(
+        bg: dark,
+        border: kFullColor,
+        borderWidth: 4,
+        label:
+            '${held.toStringAsFixed(1)}/${hold.duration.toStringAsFixed(1)}s',
+        labelColor: Colors.white,
+      );
+    }
+    if (up != null) {
+      final p = (1 - (up.start - _t) / _lead).clamp(0.0, 1.0);
+      final color = _kindColors[up.kind]!;
+      return TileStyle(
+        bg: dark,
+        border: color,
+        borderWidth: 2 + 3 * p,
+        label: '${up.duration.toStringAsFixed(1)}s',
+        labelColor: Colors.white,
+        overlay: Stack(
           children: [
-            const Icon(Icons.emoji_events, size: 64, color: Colors.amber),
-            const SizedBox(height: 8),
-            const Text('Performance Summary',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey[300]!),
-              ),
-              child: Column(
-                children: [
-                  _row('Final score', '$_score'),
-                  const Divider(height: 18),
-                  _row('Tiles hit', '$_hit / $_maxTiles'),
-                  const Divider(height: 18),
-                  _row('Accuracy', '${accuracy.toStringAsFixed(1)}%'),
-                  const Divider(height: 18),
-                  _row('Perfect / Early / Late',
-                      '$_perfect / $_early / $_late'),
-                  const Divider(height: 18),
-                  _row('Missed', '$_missed'),
-                ],
+            Center(
+              child: FractionallySizedBox(
+                widthFactor: 0.45,
+                heightFactor: 0.45,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white24, width: 2),
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 8),
-            const Text('Saved to My Progress',
-                style: TextStyle(color: Colors.black54)),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: _startGame,
-              icon: const Icon(Icons.replay),
-              label: const Text('Play Again',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              style: FilledButton.styleFrom(
-                  backgroundColor: kTeal,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 28, vertical: 12)),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Back to Home'),
+            Center(
+              child: FractionallySizedBox(
+                widthFactor: 1 - 0.55 * p,
+                heightFactor: 1 - 0.55 * p,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: color, width: 4),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
-      ),
+      );
+    }
+    return const TileStyle(
+        bg: dark, border: Color(0xFF3A3A6A), labelColor: Colors.white);
+  }
+
+  Widget _summary() {
+    final accuracy =
+        _notes.isEmpty ? 0.0 : _completed / _notes.length * 100;
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Icon(Icons.emoji_events, size: 64, color: Colors.amber),
+        const SizedBox(height: 8),
+        Text(_early ? 'Session stopped' : 'Performance Summary',
+            textAlign: TextAlign.center,
+            style:
+                const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[300]!),
+          ),
+          child: Column(
+            children: [
+              _row('Final score', '$_score'),
+              const Divider(height: 18),
+              _row('Holds completed', '$_completed / ${_notes.length}'),
+              const Divider(height: 18),
+              _row('Completion', '${accuracy.toStringAsFixed(1)}%'),
+              const Divider(height: 18),
+              _row('Longest hold', '${_longest.toStringAsFixed(1)} s'),
+              const Divider(height: 18),
+              _row('Perfect / Good', '$_perfect / $_good'),
+              const Divider(height: 18),
+              _row('Released early', '$_dropped'),
+              const Divider(height: 18),
+              _row('Missed', '$_missed'),
+              const Divider(height: 18),
+              _row('Full / Half / No press',
+                  '${_stats.full} / ${_stats.half} / ${_stats.none}'),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text('Saved to My Progress',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.black54)),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: () => setState(() => _phase = _RPhase.setup),
+          icon: const Icon(Icons.replay),
+          label: const Text('Play Again',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          style: FilledButton.styleFrom(
+              backgroundColor: kTeal,
+              padding: const EdgeInsets.symmetric(vertical: 14)),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Back to Home'),
+        ),
+      ],
     );
   }
 
@@ -522,9 +602,118 @@ class _RhythmGameScreenState extends State<RhythmGameScreen>
                 color: Colors.black54,
                 fontWeight: FontWeight.w500)),
         Text(value,
-            style:
-                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
       ],
     );
   }
+}
+
+// ===========================================================================
+// Perspective highway (1x3 mode)
+// ===========================================================================
+class _HighwayPainter extends CustomPainter {
+  final List<_Note> notes;
+  final double t;
+  final double lead;
+  final Set<int> down;
+
+  _HighwayPainter(this.notes, this.t, this.lead, this.down);
+
+  @override
+  void paint(Canvas canvas, Size s) {
+    final rect = Offset.zero & s;
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF05051A), Color(0xFF241046)],
+        ).createShader(rect),
+    );
+
+    final hitY = s.height * 0.88;
+    final horizon = s.height * 0.03;
+    final span = hitY - horizon;
+    final fullW = s.width * 0.96;
+
+    double yAt(double p) => horizon + span * pow(p, 1.6).toDouble();
+    double sc(double y) => 0.30 + 0.70 * ((y - horizon) / span);
+    double cx(int lane, double y) =>
+        s.width / 2 + (lane - 1) * (fullW / 3) * sc(y);
+    double hw(double y) => (fullW / 3) * sc(y) / 2;
+
+    const laneColors = [Color(0xFF00E5FF), Color(0xFFFF4081), Color(0xFFFFD740)];
+
+    // lanes
+    for (var l = 0; l < 3; l++) {
+      final path = Path()
+        ..moveTo(cx(l, horizon) - hw(horizon), horizon)
+        ..lineTo(cx(l, horizon) + hw(horizon), horizon)
+        ..lineTo(cx(l, s.height) + hw(s.height), s.height)
+        ..lineTo(cx(l, s.height) - hw(s.height), s.height)
+        ..close();
+      final isDown = down.contains(l);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = isDown
+              ? laneColors[l].withValues(alpha: 0.28)
+              : Colors.white.withValues(alpha: l.isEven ? 0.04 : 0.08),
+      );
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.5
+          ..color = Colors.white.withValues(alpha: 0.15),
+      );
+    }
+
+    // hit line
+    canvas.drawLine(
+      Offset(0, hitY),
+      Offset(s.width, hitY),
+      Paint()
+        ..color = Colors.cyanAccent
+        ..strokeWidth = 3,
+    );
+
+    // notes
+    for (final n in notes) {
+      if (n.state != 0 && n.state != 1) continue;
+      final pHead = n.state == 1 ? 1.0 : (t - (n.start - lead)) / lead;
+      if (pHead <= 0 || pHead > 1.25) continue;
+      var pTail = (t - (n.start + n.duration - lead)) / lead;
+      if (pTail < 0) pTail = 0;
+
+      final yH = yAt(pHead);
+      final yT = yAt(pTail);
+      final color = _kindColors[n.kind]!;
+      const bw = 0.55;
+
+      final body = Path()
+        ..moveTo(cx(n.lane, yT) - hw(yT) * bw, yT)
+        ..lineTo(cx(n.lane, yT) + hw(yT) * bw, yT)
+        ..lineTo(cx(n.lane, yH) + hw(yH) * bw, yH)
+        ..lineTo(cx(n.lane, yH) - hw(yH) * bw, yH)
+        ..close();
+      canvas.drawPath(
+          body, Paint()..color = color.withValues(alpha: n.state == 1 ? 0.75 : 0.45));
+
+      final cap = RRect.fromRectAndRadius(
+        Rect.fromCenter(
+          center: Offset(cx(n.lane, yH), yH),
+          width: hw(yH) * 2 * 0.9,
+          height: 16 * sc(yH),
+        ),
+        const Radius.circular(8),
+      );
+      canvas.drawRRect(
+          cap, Paint()..color = color.withValues(alpha: pHead > 1 ? 0.4 : 1.0));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HighwayPainter old) => true;
 }
